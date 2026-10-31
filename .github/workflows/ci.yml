@@ -11,6 +11,7 @@ jobs:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
 
@@ -20,21 +21,19 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       - name: Install dependencies
-        run: npm install
+        run: npm install --legacy-peer-deps
 
       - name: Type-check
         run: npx tsc --noEmit
 
       - name: Run tests
         run: npm test
-        # Note: QB64 e2e tests are automatically skipped on CI runners because
-        # QB64 is not installed. They run locally when QB64_PATH is set or
-        # qb64 is on PATH. A future job could install QB64 on ubuntu-latest
-        # to exercise the full e2e path.
+        # QB64 e2e tests are automatically skipped on CI runners (qb64 not installed).
+        # To run e2e locally: install QB64 from https://qb64.com, then npm test.
 
   build:
     name: Build
@@ -47,11 +46,11 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       - name: Install dependencies
-        run: npm install
+        run: npm install --legacy-peer-deps
 
       - name: Build
         run: npm run build

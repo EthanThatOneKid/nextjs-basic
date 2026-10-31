@@ -1,6 +1,6 @@
 // src/runtime/basicRuntime.ts — persistent QB64 child process manager
 
-import { spawn, ChildProcessWithoutNullStreams } from 'child_process';
+import { spawn, ChildProcess } from 'child_process';
 import * as readline from 'readline';
 import * as path from 'path';
 import { QB64TimeoutError, QB64CrashError } from '../types';
@@ -10,11 +10,11 @@ const TIMEOUT_MS = 5000;
 interface PendingCall {
   resolve: (line: string) => void;
   reject: (err: Error) => void;
-  timer: NodeJS.Timeout;
+  timer: ReturnType<typeof setTimeout>;
 }
 
 interface RuntimeProcess {
-  proc: ChildProcessWithoutNullStreams;
+  proc: ChildProcess;
   rl: readline.Interface;
   pending: Map<string, PendingCall>;
 }
@@ -24,8 +24,6 @@ const procs = new Map<string, RuntimeProcess>();
 let idCounter = 0;
 
 function getBinPath(routeName: string): string {
-  // Binaries are written to <project-root>/bin/ by the compiler step.
-  // In production the project root is process.cwd(); in dev it's the same.
   const ext = process.platform === 'win32' ? '.exe' : '';
   return path.join(process.cwd(), 'bin', routeName + ext);
 }
@@ -34,7 +32,6 @@ function killRuntime(routeName: string): void {
   const rt = procs.get(routeName);
   if (!rt) return;
   procs.delete(routeName);
-  // Reject all pending calls for this route
   for (const [, call] of rt.pending) {
     clearTimeout(call.timer);
     call.reject(new QB64CrashError(routeName, null));
@@ -52,8 +49,11 @@ function getRuntime(routeName: string): RuntimeProcess {
     stdio: ['pipe', 'pipe', 'inherit'],
   });
 
-  const pending = new Map<string, PendingCall>();
+  if (!proc.stdin || !proc.stdout) {
+    throw new Error(`[nextjs-basic] Failed to open STDIO streams for ${routeName}`);
+  }
 
+  const pending = new Map<string, PendingCall>();
   const rl = readline.createInterface({ input: proc.stdout });
 
   rl.on('line', (line) => {
@@ -61,14 +61,11 @@ function getRuntime(routeName: string): RuntimeProcess {
     try {
       parsed = JSON.parse(line);
     } catch {
-      // Malformed line — ignore; the timeout will clean up
       return;
     }
-
     const id = String(parsed['_id']);
     const call = pending.get(id);
     if (!call) return;
-
     pending.delete(id);
     clearTimeout(call.timer);
     call.resolve(line);
@@ -108,7 +105,6 @@ export function callBasic(payload: BasicPayload): Promise<string> {
 
     const timer = setTimeout(() => {
       rt.pending.delete(id);
-      // Kill the process so it doesn't accumulate stalled state
       killRuntime(endpoint);
       reject(new QB64TimeoutError(endpoint));
     }, TIMEOUT_MS);
@@ -116,7 +112,7 @@ export function callBasic(payload: BasicPayload): Promise<string> {
     rt.pending.set(id, { resolve, reject, timer });
 
     const line = JSON.stringify({ ...payload, _id: id }) + '\n';
-    rt.proc.stdin.write(line, (err) => {
+    rt.proc.stdin!.write(line, (err) => {
       if (err) {
         clearTimeout(timer);
         rt.pending.delete(id);
@@ -126,7 +122,6 @@ export function callBasic(payload: BasicPayload): Promise<string> {
   });
 }
 
-/** Gracefully shut down all running QB64 processes (call on server shutdown). */
 export function shutdownAll(): void {
   for (const [routeName] of procs) {
     killRuntime(routeName);
