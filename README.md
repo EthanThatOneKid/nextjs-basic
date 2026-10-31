@@ -1,5 +1,7 @@
 # nextjs-basic
 
+[![CI](https://github.com/EthanThatOneKid/nextjs-basic/actions/workflows/ci.yml/badge.svg)](https://github.com/EthanThatOneKid/nextjs-basic/actions/workflows/ci.yml)
+
 Write Next.js API routes in QB64 BASIC.
 
 ```basic
