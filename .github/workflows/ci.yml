@@ -24,13 +24,17 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci
+        run: npm install
 
       - name: Type-check
         run: npx tsc --noEmit
 
       - name: Run tests
         run: npm test
+        # Note: QB64 e2e tests are automatically skipped on CI runners because
+        # QB64 is not installed. They run locally when QB64_PATH is set or
+        # qb64 is on PATH. A future job could install QB64 on ubuntu-latest
+        # to exercise the full e2e path.
 
   build:
     name: Build
@@ -47,7 +51,7 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci
+        run: npm install
 
       - name: Build
         run: npm run build
