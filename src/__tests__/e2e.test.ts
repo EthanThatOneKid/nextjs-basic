@@ -36,6 +36,7 @@ const SKIP = !QB64;
 // ---------------------------------------------------------------------------
 
 const EXAMPLE_BAS = path.join(__dirname, '..', '..', 'example', 'app', 'api', 'hello', 'route.bas');
+const ECHO_BAS    = path.join(__dirname, '..', '..', 'example', 'app', 'api', 'echo',  'route.bas');
 const RUNTIME_BAS = path.join(__dirname, '..', 'runtime', 'runtime.bas');
 
 function compileTestBinary(basFile: string, scratchDir: string): string {
@@ -168,6 +169,110 @@ describeE2E('QB64 e2e — example hello route', () => {
     expect(resp['_id']).toBe('test-1');
   });
 });
+
+describeE2E('QB64 e2e — example echo route (POST)', () => {
+  let scratchDir: string;
+  let binPath: string;
+
+  beforeAll(() => {
+    scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nb-echo-e2e-'));
+
+    // The echo route needs a glue file generated from its TYPE blocks.
+    // Run codegen inline here since we can't run the full plugin in tests.
+    const { parseBasFile, writeGeneratedFiles } = require('../codegen');
+    const parsed = parseBasFile(ECHO_BAS);
+    writeGeneratedFiles(parsed);
+
+    console.log(`[e2e] Compiling echo route with QB64 at: ${QB64}`);
+    binPath = compileTestBinary(ECHO_BAS, scratchDir);
+    console.log(`[e2e] Echo binary: ${binPath}`);
+  });
+
+  afterAll(() => {
+    try { fs.rmSync(scratchDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  test('binary exists and is executable', () => {
+    expect(fs.existsSync(binPath)).toBe(true);
+    expect(fs.statSync(binPath).size).toBeGreaterThan(0);
+  });
+
+  test('POST repeats message the requested number of times', async () => {
+    const resp = await sendRequest(binPath, {
+      method: 'POST',
+      path: '/api/echo',
+      endpoint: 'echo',
+      bodyJson: JSON.stringify({ message: 'BASIC', count: 3 }),
+    }) as Record<string, unknown>;
+
+    expect(resp['statusCode']).toBe(200);
+    const body = JSON.parse(resp['bodyJson'] as string);
+    expect(body.result).toBe('BASIC BASIC BASIC');
+    expect(body.repeats).toBe(3);
+  });
+
+  test('POST with count 1 returns the message once', async () => {
+    const resp = await sendRequest(binPath, {
+      method: 'POST',
+      path: '/api/echo',
+      endpoint: 'echo',
+      bodyJson: JSON.stringify({ message: 'Hello', count: 1 }),
+    }) as Record<string, unknown>;
+
+    const body = JSON.parse(resp['bodyJson'] as string);
+    expect(body.result).toBe('Hello');
+    expect(body.repeats).toBe(1);
+  });
+
+  test('POST with count 0 defaults to 1 repeat', async () => {
+    const resp = await sendRequest(binPath, {
+      method: 'POST',
+      path: '/api/echo',
+      endpoint: 'echo',
+      bodyJson: JSON.stringify({ message: 'QB64', count: 0 }),
+    }) as Record<string, unknown>;
+
+    const body = JSON.parse(resp['bodyJson'] as string);
+    expect(body.repeats).toBe(1);
+  });
+
+  test('POST caps count at 10', async () => {
+    const resp = await sendRequest(binPath, {
+      method: 'POST',
+      path: '/api/echo',
+      endpoint: 'echo',
+      bodyJson: JSON.stringify({ message: 'x', count: 99 }),
+    }) as Record<string, unknown>;
+
+    const body = JSON.parse(resp['bodyJson'] as string);
+    expect(body.repeats).toBe(10);
+  });
+
+  test('GET returns 405 on echo route (only POST defined)', async () => {
+    const resp = await sendRequest(binPath, {
+      method: 'GET',
+      path: '/api/echo',
+      endpoint: 'echo',
+      bodyJson: '{}',
+    }) as Record<string, unknown>;
+
+    expect(resp['statusCode']).toBe(405);
+  });
+
+  test('_id is echoed back in response', async () => {
+    const resp = await sendRequest(binPath, {
+      method: 'POST',
+      path: '/api/echo',
+      endpoint: 'echo',
+      bodyJson: JSON.stringify({ message: 'id-test', count: 1 }),
+      _id: 'echo-42',
+    }) as Record<string, unknown>;
+
+    expect(resp['_id']).toBe('echo-42');
+  });
+});
+
+
 
 // Always-visible skip notice when QB64 is absent
 if (SKIP) {
