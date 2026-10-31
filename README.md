@@ -80,6 +80,14 @@ build error.
 | `QB64_PATH` | (from PATH) | Full path to the qb64 executable |
 | `NEXTJS_BASIC_VERBOSE` | `0` | Set to `1` for build-time logging |
 
+## Deployment
+
+Serverless platforms (Vercel, Netlify, Lambda) are not supported — the QB64
+binary runs as a persistent child process. Use Railway, Fly.io, Render, or any
+Docker-capable host.
+
+See [docs/deployment.md](docs/deployment.md) for step-by-step guides.
+
 ## License
 
 MIT
