@@ -1,17 +1,25 @@
-# Kiroween 2026 Hackathon Submission
+# Kiroween 2026 — nextjs-basic
 
-**Project:** nextjs-basic
 **Category:** Frankenstein
-**Repository:** https://github.com/EthanThatOneKid/nextjs-basic
+**Repo:** https://github.com/EthanThatOneKid/nextjs-basic
 
 ---
 
-## What it does
+I've been a QB64 BASIC fan for a while. When I saw that Next.js is experimenting
+with Go as a backend language — `.go` files as API routes — my first thought was:
+what's the least reasonable language you could do that with?
 
-`nextjs-basic` is a Next.js plugin that lets you write backend API route
-handlers in **QB64 BASIC**. Drop a `.bas` file where you would normally drop a
-`route.ts`, and it becomes a fully wired, type-safe Next.js route — no
-TypeScript, no boilerplate.
+QB64 BASIC. Obviously.
+
+So I built it.
+
+---
+
+## The idea
+
+`nextjs-basic` is a Next.js plugin. You write a `.bas` file at
+`app/api/hello/route.bas`, and it becomes a real Next.js API route. TypeScript
+types are generated from your BASIC `TYPE` blocks. You never touch a `route.ts`.
 
 ```basic
 ' app/api/hello/route.bas
@@ -39,86 +47,47 @@ FUNCTION GET (req AS Request, resp AS Response)
 END FUNCTION
 ```
 
-That is the entire handler. The plugin handles everything else.
+That's the whole file. The plugin takes it from there.
 
 ---
 
-## The Frankenstein angle
+## Why QB64 actually works here
 
-Next.js is one of the most modern web frameworks available. QB64 BASIC is a
-language from 1985 compiled via C++ to native machine code.
+QB64 isn't a toy. It transpiles to C++ and compiles to a native binary via GCC.
+The same source file builds on Windows, Linux, and macOS without changes.
 
-This project makes them work together — and it actually makes sense:
+The one thing QB64 can't do is WebSockets or gRPC. But it can read from STDIN
+and write to STDOUT, which is all you need. The plugin spawns the binary once
+per route and keeps it alive — every request is a JSON line in, a JSON line out.
+No cold starts, no per-request process overhead.
 
-- QB64 compiles to native binaries via GCC. A BASIC backend can be *faster*
-  than a TypeScript one running in Node.js.
-- QB64 is inherently cross-platform: the same `.bas` file compiles on Windows,
-  Linux, and macOS without changes.
-- The developer experience mirrors what Next.js is experimenting with for Go:
-  one file, one function, the rest is invisible.
-
-The combination is absurd on its face and technically coherent underneath.
-That's the Frankenstein.
+In theory a QB64 route is faster than the same logic in TypeScript, because it's
+not running in a JavaScript VM.
 
 ---
 
 ## How it works
 
-### Build time
+At `next build` time:
+
+1. The plugin finds every `app/api/**/route.bas`
+2. It parses the `TYPE` blocks and generates `route.types.ts` (TypeScript interfaces) and `route.ts` (a thin Next.js shim)
+3. It concatenates the framework's STDIO loop (`runtime.bas`), the generated type-conversion code (`route.glue.bas`), and your code (`route.bas`), then runs QB64 to compile the whole thing to a binary in `bin/`
+
+At request time:
 
 ```
-app/api/hello/route.bas
-        │
-        ├─ bas-parser → route.types.ts   (TypeScript interfaces, auto-generated)
-        │              → route.ts         (Next.js shim, auto-generated)
-        │
-        └─ QB64 compiler
-               runtime.bas       (framework STDIO loop — invisible)
-             + route.glue.bas    (ParseXxx/WriteXxx SUBs — auto-generated)
-             + route.bas         (user code)
-               ──────────────────
-               → bin/hello       (native binary)
+Next.js → route.ts shim → Node.js child process → QB64 binary (STDIO) → response
 ```
 
-The user's `TYPE` blocks are parsed and converted to TypeScript `interface`s.
-Callers get full type safety. No one writes a single line of TypeScript.
-
-### Runtime
-
-```
-Next.js request
-      │
-      ▼
-route.ts (generated shim)
-      │  callBasic({ endpoint, method, path, bodyJson })
-      ▼
-basicRuntime.ts  ── JSON line ──▶  bin/hello  (persistent QB64 process)
-                 ◀─ JSON line ──
-      │
-      ▼
-NextResponse.json(result)
-```
-
-The QB64 binary spawns **once** and stays alive. Every request is a JSON line
-over STDIN; every response is a JSON line over STDOUT. No cold starts. No
-per-request process overhead.
-
-### Type generation
-
-QB64 `TYPE` blocks map to TypeScript interfaces automatically:
-
-| QB64 | TypeScript |
-|---|---|
-| `STRING * N` | `string` |
-| `INTEGER`, `LONG`, `SINGLE`, `DOUBLE`, `_BYTE`, `_FLOAT` | `number` |
-| `_INTEGER64` | `bigint` |
-| Unsupported types | Build error with file + line |
+The QB64 binary handles the JSON parsing, calls your `GET`/`POST` function, and
+writes the JSON response back. The generated `ParseHelloBody` and
+`WriteHelloResult` functions are QB64 SUBs built from your TYPE definitions, so
+your handler code just works with typed variables.
 
 ---
 
-## Developer experience
-
-Installing the plugin into any Next.js project:
+## Setup
 
 ```bash
 npm install github:EthanThatOneKid/nextjs-basic
@@ -130,81 +99,55 @@ const { withBasic } = require('nextjs-basic');
 module.exports = withBasic({});
 ```
 
-After that, any `.bas` file at `app/api/**/route.bas` is a live route. No other
-configuration required.
+Requires QB64 on your PATH (or set `QB64_PATH`). The plugin does the rest.
 
 ---
 
-## What was built with Kiro
+## Built with Kiro
 
-This project was built spec-first using Kiro's spec-driven development workflow:
+I used Kiro's spec-driven workflow: wrote `requirements.md` and `design.md`
+first, then Kiro implemented against them. The specs are committed in
+`.kiro/specs/` if you want to see how the design evolved.
 
-- `requirements.md` — functional and non-functional requirements, type tables,
-  out-of-scope items
-- `design.md` — component breakdown, layer diagram, error table, build sequence
+The codebase:
 
-Kiro then implemented every component against those specs:
-
-| File | What it does |
+| File | What it is |
 |---|---|
-| `src/codegen.ts` | QB64 TYPE parser + TypeScript codegen + QB64 glue SUB generator |
-| `src/compiler.ts` | QB64 → native binary compile step |
-| `src/plugin.ts` | webpack plugin (hooks into `next build` / `next dev`) |
-| `src/index.ts` | `withBasic()` public API |
-| `src/runtime/basicRuntime.ts` | Node.js persistent child process manager |
-| `src/runtime/runtime.bas` | QB64 STDIO loop (invisible to users) |
+| `src/codegen.ts` | TYPE parser, TS codegen, QB64 glue SUB generator |
+| `src/compiler.ts` | QB64 compile step |
+| `src/plugin.ts` | webpack plugin |
+| `src/runtime/basicRuntime.ts` | Node.js child process manager |
+| `src/runtime/runtime.bas` | QB64 STDIO loop (user never sees this) |
 | `src/__tests__/codegen.test.ts` | 19 unit tests |
-| `src/__tests__/e2e.test.ts` | 12 QB64 integration tests (auto-skip without QB64) |
+| `src/__tests__/e2e.test.ts` | 12 integration tests (need QB64 to run) |
 
-CI passes on ubuntu, windows, and macos.
-
----
-
-## Technical highlights
-
-**No per-request cold starts.** The QB64 binary is spawned once. Node.js
-reuses it via STDIO for every subsequent request. A timed-out or crashed binary
-is re-spawned automatically on the next request.
-
-**Full type safety end-to-end.** The bas-parser reads `TYPE … END TYPE` blocks
-and emits TypeScript interfaces. The generated `route.ts` shim imports them.
-Callers get autocomplete and type checking with zero manual work.
-
-**Codegen is zero-magic.** Every generated file (`route.ts`, `route.types.ts`,
-`route.glue.bas`) is written to disk alongside the `.bas` file. You can read,
-inspect, and commit them.
-
-**Cross-platform.** QB64 compiles to native binaries on all three major OSes.
-CI verifies the plugin on ubuntu-latest, windows-latest, and macos-latest on
-every push.
+CI runs on ubuntu, windows, and macos on every push.
 
 ---
 
-## Limitations (v1)
+## Known limitations
 
-- Fixed-length strings only in `TYPE` blocks (`STRING * N`; bare `STRING`
-  gives a build error with a clear message)
-- Node.js runtime only — not compatible with Vercel Edge or serverless
-  Functions (see `docs/deployment.md`)
-- No streaming responses
-- No middleware support
+- Strings in `TYPE` blocks must be fixed-length (`STRING * 50`, not `STRING`).
+  The parser gives a clear build error if you forget.
+- Needs a persistent server — Vercel and other serverless platforms won't work.
+  Railway, Fly.io, and Render all work fine. There's a `Dockerfile` in
+  `example/` and a guide in `docs/deployment.md`.
+- No streaming, no middleware in v1.
 
 ---
 
-## Repository
-
-https://github.com/EthanThatOneKid/nextjs-basic
+## Repo layout
 
 ```
-nextjs-basic/
-├── src/                   plugin source
-├── example/
-│   ├── app/api/hello/     GET example
-│   ├── app/api/echo/      POST example
-│   └── Dockerfile         Railway / Fly.io / Render deployment
-├── docs/
-│   └── deployment.md      hosting guide
-└── .kiro/specs/
-    ├── requirements.md
-    └── design.md
+src/                   plugin
+example/
+  app/api/hello/       GET example
+  app/api/echo/        POST example
+  Dockerfile           for Railway / Fly.io / Render
+docs/
+  deployment.md        hosting guide
+  submission.md        this file
+.kiro/specs/
+  requirements.md
+  design.md
 ```
