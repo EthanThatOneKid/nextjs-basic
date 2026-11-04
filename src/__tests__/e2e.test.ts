@@ -287,3 +287,63 @@ if (SKIP) {
     expect(true).toBe(true);
   });
 }
+
+const USERS_BAS = path.join(__dirname, '..', '..', 'example', 'app', 'api', 'users', '[id]', 'route.bas');
+
+describeE2E('QB64 e2e — request context (query, headers, params)', () => {
+  let scratchDir: string;
+  let helloBin: string;
+  let usersBin: string;
+
+  beforeAll(() => {
+    scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nb-ctx-e2e-'));
+    fs.mkdirSync(path.join(scratchDir, 'hello'));
+    fs.mkdirSync(path.join(scratchDir, 'users'));
+    helloBin = compileTestBinary(EXAMPLE_BAS, path.join(scratchDir, 'hello'));
+    usersBin = compileTestBinary(USERS_BAS, path.join(scratchDir, 'users'));
+  });
+
+  afterAll(() => {
+    try { fs.rmSync(scratchDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  test('Query$ reads the query string when the body has no name', async () => {
+    const resp = await sendRequest(helloBin, {
+      method: 'GET',
+      path: '/api/hello',
+      endpoint: 'hello',
+      bodyJson: '{}',
+      queryJson: JSON.stringify({ name: 'Ada' }),
+      headersJson: '{}',
+      paramsJson: '{}',
+    }) as Record<string, unknown>;
+    const body = JSON.parse(resp['bodyJson'] as string);
+    expect(body.message).toContain('Hello, Ada!');
+  });
+
+  test('Param$, Query$ and Header$ reach the route', async () => {
+    const resp = await sendRequest(usersBin, {
+      method: 'GET',
+      path: '/api/users/42',
+      endpoint: 'users___id_',
+      bodyJson: '{}',
+      queryJson: JSON.stringify({ verbose: '1' }),
+      headersJson: JSON.stringify({ 'user-agent': 'jest' }),
+      paramsJson: JSON.stringify({ id: '42' }),
+    }) as Record<string, unknown>;
+    expect(resp['statusCode']).toBe(200);
+    const body = JSON.parse(resp['bodyJson'] as string);
+    expect(body).toEqual({ id: '42', verbose: '1', agent: 'jest' });
+  });
+
+  test('missing query, header and param come back empty', async () => {
+    const resp = await sendRequest(usersBin, {
+      method: 'GET',
+      path: '/api/users/x',
+      endpoint: 'users___id_',
+      bodyJson: '{}',
+    }) as Record<string, unknown>;
+    const body = JSON.parse(resp['bodyJson'] as string);
+    expect(body).toEqual({ id: '', verbose: '', agent: '' });
+  });
+});

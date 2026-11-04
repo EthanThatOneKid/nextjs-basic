@@ -9,6 +9,7 @@ import {
   generateShim,
   generateQB64Glue,
   generateQB64GlueDecls,
+  routeNameFor,
 } from '../codegen';
 import { ParseError } from '../types';
 
@@ -315,5 +316,38 @@ END TYPE
 `);
     const decls = generateQB64GlueDecls(parseBasFile(file));
     expect(decls).toContain('DIM SHARED glue_HelloBody AS HelloBody');
+  });
+});
+
+describe('routeNameFor', () => {
+  const api = (...p: string[]) => path.join('proj', 'app', 'api', ...p, 'route.bas');
+
+  test('uses the path below app/api', () => {
+    expect(routeNameFor(api('hello'))).toBe('hello');
+    expect(routeNameFor(api('users', 'list'))).toBe('users__list');
+  });
+
+  test('makes dynamic segments filesystem-safe and unique per route', () => {
+    expect(routeNameFor(api('users', '[id]'))).toBe('users___id_');
+    expect(routeNameFor(api('posts', '[id]'))).not.toBe(routeNameFor(api('users', '[id]')));
+    expect(routeNameFor(api('docs', '[...slug]'))).toBe('docs______slug_');
+  });
+
+  test('falls back to the folder name outside app/api', () => {
+    expect(routeNameFor(path.join('tmp', 'hello', 'route.bas'))).toBe('hello');
+  });
+});
+
+describe('generateShim request context', () => {
+  test('forwards query, headers and params', () => {
+    const file = tmpBas(`
+FUNCTION RunRoute$ (methStr AS STRING)
+    IF methStr = "GET" THEN RunRoute$ = "{}"
+END FUNCTION
+`);
+    const shim = generateShim(parseBasFile(file));
+    expect(shim).toContain('searchParams');
+    expect(shim).toContain('req.headers');
+    expect(shim).toContain('await ctx.params');
   });
 });

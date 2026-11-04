@@ -22,6 +22,9 @@ TYPE Request
     bodyJson AS STRING * 4096
     reqId    AS STRING * 36
     endpoint AS STRING * 64
+    queryJson   AS STRING * 2048
+    headersJson AS STRING * 4096
+    paramsJson  AS STRING * 1024
 END TYPE
 
 TYPE Response
@@ -59,6 +62,9 @@ DO
     gReq.path     = JStr$(reqLine, "path")
     gReq.bodyJson = JStr$(reqLine, "bodyJson")
     gReq.endpoint = JStr$(reqLine, "endpoint")
+    gReq.queryJson   = JStr$(reqLine, "queryJson")
+    gReq.headersJson = JStr$(reqLine, "headersJson")
+    gReq.paramsJson  = JStr$(reqLine, "paramsJson")
 
     gResp.statusCode = 200
     gResp.bodyJson   = "{}"
@@ -190,4 +196,16 @@ FUNCTION JEn$ (txtIn AS STRING)
         END IF
     NEXT eIdx
     JEn$ = eOut
+END FUNCTION
+
+FUNCTION Query$ (kn AS STRING)
+    Query$ = JStr$(RTRIM$(gReq.queryJson), kn)
+END FUNCTION
+
+FUNCTION Header$ (kn AS STRING)
+    Header$ = JStr$(RTRIM$(gReq.headersJson), LCASE$(kn))
+END FUNCTION
+
+FUNCTION Param$ (kn AS STRING)
+    Param$ = JStr$(RTRIM$(gReq.paramsJson), kn)
 END FUNCTION
