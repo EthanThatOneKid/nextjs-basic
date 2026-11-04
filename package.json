@@ -4,6 +4,11 @@
   "description": "Use QB64 BASIC files as Next.js API route handlers",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+    "./runtime": { "types": "./dist/runtime/basicRuntime.d.ts", "default": "./dist/runtime/basicRuntime.js" },
+    "./package.json": "./package.json"
+  },
   "files": [
     "dist",
     "src/runtime/runtime.bas"

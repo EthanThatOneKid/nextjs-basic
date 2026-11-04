@@ -27,13 +27,23 @@ jobs:
       - name: Install dependencies
         run: npm install --legacy-peer-deps
 
+      # QB64-PE ships a bundled compiler on Windows, so the e2e tests can run there.
+      # Other platforms skip the e2e tests (qb64 not installed).
+      - name: Install QB64-PE (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download v4.7.0-GLFW --repo QB64-Phoenix-Edition/QB64pe -p 'qb64pe_win-x64-*.7z' -D "$RUNNER_TEMP"
+          7z x "$RUNNER_TEMP"/qb64pe_win-x64-*.7z -o"$RUNNER_TEMP/qb64pe" -y > /dev/null
+          echo "QB64_PATH=$(cygpath -w "$RUNNER_TEMP/qb64pe/qb64pe/qb64pe.exe")" >> "$GITHUB_ENV"
+
       - name: Type-check
         run: npx tsc --noEmit
 
       - name: Run tests
         run: npm test
-        # QB64 e2e tests are automatically skipped on CI runners (qb64 not installed).
-        # To run e2e locally: install QB64 from https://qb64.com, then npm test.
 
   build:
     name: Build

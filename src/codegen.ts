@@ -201,7 +201,8 @@ export function generateShim(parsed: ParsedRoute): string {
     lines.push(`    bodyJson: JSON.stringify(body),`);
     lines.push(`  });`);
     lines.push(`  const result = JSON.parse(raw);`);
-    lines.push(`  return NextResponse.json(result, { status: result.statusCode ?? 200 });`);
+    lines.push(`  const data = JSON.parse(result.bodyJson ?? '{}');`);
+    lines.push(`  return NextResponse.json(data, { status: result.statusCode ?? 200 });`);
     lines.push(`}`);
     lines.push('');
   }

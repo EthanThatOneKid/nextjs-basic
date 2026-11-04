@@ -35,6 +35,21 @@ function buildRoute(basFile: string, projectRoot: string, isVerbose: boolean): v
   writeGeneratedFiles(parsed);
 
   const binDir = path.join(projectRoot, 'bin');
+  const ext = process.platform === 'win32' ? '.exe' : '';
+  const outBin = path.join(binDir, parsed.routeName + ext);
+
+  // Skip when the binary is newer than its sources. Rebuilding would also fail on
+  // Windows while the persistent process holds the exe open.
+  const runtimeBas = path.join(__dirname, '..', 'src', 'runtime', 'runtime.bas');
+  if (fs.existsSync(outBin)) {
+    const binTime = fs.statSync(outBin).mtimeMs;
+    const inputs = [basFile, runtimeBas];
+    if (inputs.every(f => !fs.existsSync(f) || fs.statSync(f).mtimeMs <= binTime)) {
+      if (isVerbose) console.log(`[nextjs-basic] up to date ${label}`);
+      return;
+    }
+  }
+
   compileRoute(basFile, binDir);
 
   if (isVerbose) console.log(`[nextjs-basic] built ${label} → bin/${parsed.routeName}`);

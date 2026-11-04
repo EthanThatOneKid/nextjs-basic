@@ -68,8 +68,10 @@ export function compileRoute(basFile: string, outDir: string): string {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
   } catch (err: unknown) {
-    const stderr = (err as { stderr?: string }).stderr ?? String(err);
-    throw new CompileError(basFile, stderr);
+    const e = err as { stdout?: string; stderr?: string };
+    // QB64 prints compile errors to stdout; drop the progress bar lines
+    const out = (e.stdout ?? '').split(/\r?\n/).filter(l => l.trim() && !l.startsWith('[')).join('\n');
+    throw new CompileError(basFile, (out + (e.stderr ? '\n' + e.stderr : '')) || String(err));
   } finally {
     // Always clean up the temp file
     try { fs.unlinkSync(tmpFile); } catch { /* ignore */ }
