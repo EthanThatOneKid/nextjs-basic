@@ -40,7 +40,7 @@ boilerplate, no manual wiring.
 ## Install
 
 ```bash
-npm install github:<your-org>/nextjs-basic
+npm install github:EthanThatOneKid/nextjs-basic
 ```
 
 ## Setup
