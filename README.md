@@ -15,15 +15,20 @@ TYPE HelloResult
     message AS STRING * 100
 END TYPE
 
-FUNCTION GET (req AS Request, resp AS Response)
-    DIM body AS HelloBody
-    body.name = JsonGetString$(RTRIM$(req.bodyJson), "name")
+FUNCTION RunRoute$ (meth AS STRING)
+    IF meth = "GET" THEN
+        ParseHelloBody RTRIM$(gReq.bodyJson)
+        IF RTRIM$(glue_HelloBody.name) = "" THEN glue_HelloBody.name = "World"
 
-    DIM result AS HelloResult
-    result.message = "Hello, " + RTRIM$(body.name) + "!"
+        glue_HelloResult.message  = "Hello, " + RTRIM$(glue_HelloBody.name) + "! Greetings from QB64 BASIC."
+        glue_HelloResult.language = "QB64 BASIC"
 
-    resp.bodyJson = "{""message"":""" + RTRIM$(result.message) + """}"
-    resp.statusCode = 200
+        gResp.statusCode = 200
+        RunRoute$ = WriteHelloResult$
+    ELSE
+        gResp.statusCode = 405
+        RunRoute$ = "{" + CHR$(34) + "error" + CHR$(34) + ":" + CHR$(34) + "Method Not Allowed" + CHR$(34) + "}"
+    END IF
 END FUNCTION
 ```
 
@@ -48,14 +53,14 @@ module.exports = withBasic({});
 
 ## Requirements
 
-- [QB64](https://qb64.com) installed and on your `PATH` (or set `QB64_PATH`)
+- [QB64-PE](https://github.com/QB64-Phoenix-Edition/QB64pe/releases) (recommended) or QB64 installed and on your `PATH` (or set `QB64_PATH`). The plugin looks for `qb64pe` first, then `qb64`.
 - Next.js 14+
 - Node.js 18+
 
 ## How it works
 
 1. Any `app/api/**/route.bas` is detected at build time.
-2. The plugin runs the QB64 compiler: `runtime.bas` + `route.bas` → native binary in `bin/`.
+2. The plugin runs the QB64 compiler: `runtime.bas` + `route.bas` + generated glue → native binary in `bin/` (headless, `-x`). Binaries that are newer than their sources are not rebuilt..
 3. `route.types.ts` is generated from your `TYPE` blocks.
 4. `route.ts` is generated as a thin Next.js shim that calls the binary.
 5. The binary runs as a persistent process — one spawn, no cold starts.
@@ -77,8 +82,15 @@ build error.
 
 | Variable | Default | Description |
 |---|---|---|
-| `QB64_PATH` | (from PATH) | Full path to the qb64 executable |
+| `QB64_PATH` | (from PATH) | Full path to the `qb64pe` or `qb64` executable |
 | `NEXTJS_BASIC_VERBOSE` | `0` | Set to `1` for build-time logging |
+
+## Testing
+
+`npm test` runs the unit tests everywhere. The end-to-end tests compile the
+example routes with QB64 and talk to them over STDIO. They run when a QB64
+compiler is found and skip otherwise. CI installs QB64-PE on the Windows job, so
+the e2e tests run there on every push. Ubuntu and macOS run the unit tests only.
 
 ## Deployment
 

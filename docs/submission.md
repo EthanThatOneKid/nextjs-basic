@@ -33,17 +33,20 @@ TYPE HelloResult
     language AS STRING * 20
 END TYPE
 
-FUNCTION GET (req AS Request, resp AS Response)
-    DIM body AS HelloBody
-    DIM result AS HelloResult
+FUNCTION RunRoute$ (meth AS STRING)
+    IF meth = "GET" THEN
+        ParseHelloBody RTRIM$(gReq.bodyJson)
+        IF RTRIM$(glue_HelloBody.name) = "" THEN glue_HelloBody.name = "World"
 
-    ParseHelloBody req, body
+        glue_HelloResult.message  = "Hello, " + RTRIM$(glue_HelloBody.name) + "! Greetings from QB64 BASIC."
+        glue_HelloResult.language = "QB64 BASIC"
 
-    result.message  = "Hello, " + RTRIM$(body.name) + "! Greetings from QB64 BASIC."
-    result.language = "QB64 BASIC"
-
-    WriteHelloResult result, resp
-    resp.statusCode = 200
+        gResp.statusCode = 200
+        RunRoute$ = WriteHelloResult$
+    ELSE
+        gResp.statusCode = 405
+        RunRoute$ = "{" + CHR$(34) + "error" + CHR$(34) + ":" + CHR$(34) + "Method Not Allowed" + CHR$(34) + "}"
+    END IF
 END FUNCTION
 ```
 
@@ -80,7 +83,7 @@ At request time:
 Next.js → route.ts shim → Node.js child process → QB64 binary (STDIO) → response
 ```
 
-The QB64 binary handles the JSON parsing, calls your `GET`/`POST` function, and
+The QB64 binary handles the JSON parsing, calls your `RunRoute$` function, and
 writes the JSON response back. The generated `ParseHelloBody` and
 `WriteHelloResult` functions are QB64 SUBs built from your TYPE definitions, so
 your handler code just works with typed variables.
@@ -99,7 +102,7 @@ const { withBasic } = require('nextjs-basic');
 module.exports = withBasic({});
 ```
 
-Requires QB64 on your PATH (or set `QB64_PATH`). The plugin does the rest.
+Requires QB64-PE (or QB64) on your PATH, or set `QB64_PATH`. The plugin does the rest.
 
 ---
 
@@ -119,9 +122,9 @@ The codebase:
 | `src/runtime/basicRuntime.ts` | Node.js child process manager |
 | `src/runtime/runtime.bas` | QB64 STDIO loop (user never sees this) |
 | `src/__tests__/codegen.test.ts` | 19 unit tests |
-| `src/__tests__/e2e.test.ts` | 12 integration tests (need QB64 to run) |
+| `src/__tests__/e2e.test.ts` | 12 integration tests (need QB64-PE or QB64 to run) |
 
-CI runs on ubuntu, windows, and macos on every push.
+CI runs on ubuntu, windows, and macos on every push. The Windows job installs QB64-PE, so the 12 end-to-end tests compile and run real routes there; the other two platforms run the unit tests.
 
 ---
 
