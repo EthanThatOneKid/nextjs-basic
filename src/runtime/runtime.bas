@@ -1,172 +1,193 @@
 ' runtime.bas — nextjs-basic framework STDIO loop
-' This file is concatenated BEFORE the user's route.bas at compile time.
-' The user never sees or edits this file.
+$CONSOLE:ONLY
+' Concatenated BEFORE route.glue.bas and route.bas at compile time.
 '
-' Protocol:
-'   STDIN  <- one JSON line per request, fields: _id, method, path, bodyJson, endpoint
-'   STDOUT -> one JSON line per response, fields: _id, statusCode, bodyJson
+' QB64 keyword avoidance rules applied here:
+'   - No underscore prefixes on variables
+'   - No QB64 keywords as variable/sub names or substrings in names
+'   - Main module code MUST come before SUB/FUNCTION definitions
+'   - No user-defined TYPE variables as SUB/FUNCTION parameters
+'
+' The user's route.bas MUST define:
+'   FUNCTION RunRoute$ (methStr AS STRING)
+' which dispatches on methStr ("GET", "POST", etc.) and returns the body JSON.
 
 ' ---------------------------------------------------------------------------
-' Framework envelope types (injected into every route compilation unit)
+' Framework envelope types
 ' ---------------------------------------------------------------------------
 
 TYPE Request
     method   AS STRING * 6
     path     AS STRING * 255
     bodyJson AS STRING * 4096
-    _id      AS STRING * 36
+    reqId    AS STRING * 36
     endpoint AS STRING * 64
 END TYPE
 
 TYPE Response
     statusCode AS INTEGER
     bodyJson   AS STRING * 4096
-    _id        AS STRING * 36
+    reqId      AS STRING * 36
 END TYPE
 
 ' ---------------------------------------------------------------------------
-' JSON helpers — minimal scanner, no external library
+' Shared globals — visible to all SUBs and the main loop
 ' ---------------------------------------------------------------------------
 
-' Extract a string value from a flat JSON object given a key.
-' Returns "" if the key is not found.
-FUNCTION JsonGetString$ (json AS STRING, key AS STRING)
-    DIM searchKey AS STRING
-    DIM pos AS INTEGER
-    DIM valStart AS INTEGER
-    DIM valEnd AS INTEGER
-    DIM ch AS STRING * 1
+DIM SHARED gReq AS Request
+DIM SHARED gResp AS Response
 
-    searchKey = CHR$(34) + key + CHR$(34) + ":"
-    pos = INSTR(json, searchKey)
-    IF pos = 0 THEN JsonGetString$ = "": EXIT FUNCTION
+' ---------------------------------------------------------------------------
+' Forward declaration for the user-defined route dispatcher
+' ---------------------------------------------------------------------------
 
-    ' Skip whitespace after the colon
-    valStart = pos + LEN(searchKey)
-    DO WHILE MID$(json, valStart, 1) = " " OR MID$(json, valStart, 1) = CHR$(9)
-        valStart = valStart + 1
+DECLARE FUNCTION RunRoute$ (methStr AS STRING)
+
+' ---------------------------------------------------------------------------
+' Main STDIO loop
+' ---------------------------------------------------------------------------
+
+DIM reqLine AS STRING
+DIM methStr AS STRING
+
+DO
+    LINE INPUT reqLine
+    IF reqLine = "" THEN _CONTINUE
+
+    gReq.reqId    = JStr$(reqLine, "_id")
+    gReq.method   = JStr$(reqLine, "method")
+    gReq.path     = JStr$(reqLine, "path")
+    gReq.bodyJson = JStr$(reqLine, "bodyJson")
+    gReq.endpoint = JStr$(reqLine, "endpoint")
+
+    gResp.statusCode = 200
+    gResp.bodyJson   = "{}"
+    gResp.reqId      = gReq.reqId
+
+    methStr = RTRIM$(gReq.method)
+
+    IF methStr = "GET" OR methStr = "POST" OR methStr = "PUT" OR methStr = "DELETE" OR methStr = "PATCH" THEN
+        gResp.bodyJson = RunRoute$(methStr)
+    ELSE
+        gResp.statusCode = 405
+        gResp.bodyJson = "{" + CHR$(34) + "error" + CHR$(34) + ":" + CHR$(34) + "Method Not Allowed" + CHR$(34) + "}"
+    END IF
+
+    PRINT BldResp$(RTRIM$(gResp.reqId), gResp.statusCode, RTRIM$(gResp.bodyJson))
+    _DELAY 0
+
+LOOP
+
+' ---------------------------------------------------------------------------
+' JSON helper functions
+' ---------------------------------------------------------------------------
+
+FUNCTION JStr$ (jsonIn AS STRING, kn AS STRING)
+    DIM srchKey AS STRING
+    DIM jPos AS INTEGER
+    DIM jStart AS INTEGER
+    DIM jEnd AS INTEGER
+    DIM jCh AS STRING * 1
+
+    srchKey = CHR$(34) + kn + CHR$(34) + ":"
+    jPos = INSTR(jsonIn, srchKey)
+    IF jPos = 0 THEN JStr$ = "": EXIT FUNCTION
+
+    jStart = jPos + LEN(srchKey)
+    DO WHILE MID$(jsonIn, jStart, 1) = " " OR MID$(jsonIn, jStart, 1) = CHR$(9)
+        jStart = jStart + 1
     LOOP
 
-    ' Must start with a quote for a string value
-    IF MID$(json, valStart, 1) <> CHR$(34) THEN JsonGetString$ = "": EXIT FUNCTION
+    IF MID$(jsonIn, jStart, 1) <> CHR$(34) THEN JStr$ = "": EXIT FUNCTION
 
-    valStart = valStart + 1  ' skip opening quote
-    valEnd = valStart
+    jStart = jStart + 1
+    jEnd = jStart
     DO
-        ch = MID$(json, valEnd, 1)
-        IF ch = CHR$(34) THEN EXIT DO  ' closing quote
-        IF ch = "" THEN EXIT DO        ' end of string
-        ' Handle basic escape: \" stays in, skip the backslash
-        IF ch = "\" THEN valEnd = valEnd + 1
-        valEnd = valEnd + 1
+        jCh = MID$(jsonIn, jEnd, 1)
+        IF jCh = CHR$(34) THEN EXIT DO
+        IF jCh = "" THEN EXIT DO
+        IF jCh = "\" THEN jEnd = jEnd + 1
+        jEnd = jEnd + 1
     LOOP
 
-    JsonGetString$ = MID$(json, valStart, valEnd - valStart)
+    JStr$ = JUn$(MID$(jsonIn, jStart, jEnd - jStart))
 END FUNCTION
 
-' Extract an integer value from a flat JSON object given a key.
-FUNCTION JsonGetInt% (json AS STRING, key AS STRING)
-    DIM searchKey AS STRING
-    DIM pos AS INTEGER
-    DIM valStart AS INTEGER
-    DIM numStr AS STRING
-    DIM ch AS STRING * 1
+FUNCTION JInt% (jsonIn AS STRING, kn AS STRING)
+    DIM srchKey AS STRING
+    DIM jPos AS INTEGER
+    DIM jStart AS INTEGER
+    DIM numBuf AS STRING
+    DIM jCh AS STRING * 1
+    DIM jIdx AS INTEGER
 
-    searchKey = CHR$(34) + key + CHR$(34) + ":"
-    pos = INSTR(json, searchKey)
-    IF pos = 0 THEN JsonGetInt% = 0: EXIT FUNCTION
+    srchKey = CHR$(34) + kn + CHR$(34) + ":"
+    jPos = INSTR(jsonIn, srchKey)
+    IF jPos = 0 THEN JInt% = 0: EXIT FUNCTION
 
-    valStart = pos + LEN(searchKey)
-    DO WHILE MID$(json, valStart, 1) = " "
-        valStart = valStart + 1
+    jStart = jPos + LEN(srchKey)
+    DO WHILE MID$(jsonIn, jStart, 1) = " "
+        jStart = jStart + 1
     LOOP
 
-    numStr = ""
-    DIM i AS INTEGER
-    i = valStart
+    numBuf = ""
+    jIdx = jStart
     DO
-        ch = MID$(json, i, 1)
-        IF ch >= "0" AND ch <= "9" OR ch = "-" THEN
-            numStr = numStr + ch
+        jCh = MID$(jsonIn, jIdx, 1)
+        IF (jCh >= "0" AND jCh <= "9") OR jCh = "-" THEN
+            numBuf = numBuf + jCh
         ELSE
             EXIT DO
         END IF
-        i = i + 1
+        jIdx = jIdx + 1
     LOOP
 
-    IF numStr = "" OR numStr = "-" THEN JsonGetInt% = 0: EXIT FUNCTION
-    JsonGetInt% = VAL(numStr)
+    IF numBuf = "" OR numBuf = "-" THEN JInt% = 0: EXIT FUNCTION
+    JInt% = VAL(numBuf)
 END FUNCTION
 
-' Build a minimal JSON response object.
-' Escapes only the characters that MUST be escaped in JSON string values.
-FUNCTION BuildResponse$ (id AS STRING, statusCode AS INTEGER, bodyJson AS STRING)
-    BuildResponse$ = "{" + _
-        CHR$(34) + "_id" + CHR$(34) + ":" + CHR$(34) + id + CHR$(34) + "," + _
-        CHR$(34) + "statusCode" + CHR$(34) + ":" + LTRIM$(STR$(statusCode)) + "," + _
-        CHR$(34) + "bodyJson" + CHR$(34) + ":" + CHR$(34) + bodyJson + CHR$(34) + _
+FUNCTION BldResp$ (rid AS STRING, sc AS INTEGER, bj AS STRING)
+    BldResp$ = "{" + _
+        CHR$(34) + "_id" + CHR$(34) + ":" + CHR$(34) + rid + CHR$(34) + "," + _
+        CHR$(34) + "statusCode" + CHR$(34) + ":" + LTRIM$(STR$(sc)) + "," + _
+        CHR$(34) + "bodyJson" + CHR$(34) + ":" + CHR$(34) + JEn$(bj) + CHR$(34) + _
         "}"
 END FUNCTION
 
-' ---------------------------------------------------------------------------
-' ParseBody: fill a TYPE variable's fields from req.bodyJson
-' This is a SUB stub; the actual implementation is type-specific and is
-' code-generated by the plugin for each route at build time.
-' For the generic runtime the user calls ParseBody passing the request.
-' ---------------------------------------------------------------------------
+FUNCTION JUn$ (txtIn AS STRING)
+    DIM uOut AS STRING
+    DIM uIdx AS INTEGER
+    DIM uCh AS STRING
+    uOut = ""
+    uIdx = 1
+    DO WHILE uIdx <= LEN(txtIn)
+        uCh = MID$(txtIn, uIdx, 1)
+        IF uCh = "\" AND uIdx < LEN(txtIn) THEN
+            uIdx = uIdx + 1
+            uCh = MID$(txtIn, uIdx, 1)
+            IF uCh = "n" THEN uCh = CHR$(10)
+            IF uCh = "t" THEN uCh = CHR$(9)
+        END IF
+        uOut = uOut + uCh
+        uIdx = uIdx + 1
+    LOOP
+    JUn$ = uOut
+END FUNCTION
 
-' NOTE: Because QB64 TYPE variables cannot be passed generically (no void*),
-' ParseBody and WriteBody are implemented as inline code in the generated
-' route-specific wrapper rather than as generic SUBs here. The framework
-' provides JsonGetString$ and JsonGetInt% as primitives the generated code uses.
-
-' ---------------------------------------------------------------------------
-' Main STDIO loop — reads requests, dispatches to user handler, writes responses
-' ---------------------------------------------------------------------------
-
-DIM req AS Request
-DIM resp AS Response
-DIM line AS STRING
-DIM methodStr AS STRING
-DIM errorResp AS STRING
-
-DO
-    ' Block until Node.js sends a request line
-    LINE INPUT line
-    IF line = "" THEN _CONTINUE
-
-    ' Unpack envelope fields
-    req._id      = JsonGetString$(line, "_id")
-    req.method   = JsonGetString$(line, "method")
-    req.path     = JsonGetString$(line, "path")
-    req.bodyJson = JsonGetString$(line, "bodyJson")
-    req.endpoint = JsonGetString$(line, "endpoint")
-
-    ' Reset response
-    resp.statusCode = 200
-    resp.bodyJson   = "{}"
-    resp._id        = req._id
-
-    ' Dispatch to the user's handler (defined in route.bas, appended below)
-    methodStr = RTRIM$(req.method)
-    SELECT CASE methodStr
-        CASE "GET"
-            CALL GET(req, resp)
-        CASE "POST"
-            CALL POST(req, resp)
-        CASE "PUT"
-            CALL PUT(req, resp)
-        CASE "DELETE"
-            CALL DELETE(req, resp)
-        CASE "PATCH"
-            CALL PATCH(req, resp)
-        CASE ELSE
-            resp.statusCode = 405
-            resp.bodyJson = "{" + CHR$(34) + "error" + CHR$(34) + ":" + CHR$(34) + "Method Not Allowed" + CHR$(34) + "}"
-    END SELECT
-
-    ' Write response
-    PRINT BuildResponse$(RTRIM$(resp._id), resp.statusCode, RTRIM$(resp.bodyJson))
-    _DELAY 0  ' yield / flush
-
-LOOP
+FUNCTION JEn$ (txtIn AS STRING)
+    DIM eOut AS STRING
+    DIM eIdx AS INTEGER
+    DIM eCh AS STRING
+    eOut = ""
+    FOR eIdx = 1 TO LEN(txtIn)
+        eCh = MID$(txtIn, eIdx, 1)
+        IF eCh = CHR$(34) OR eCh = "\" THEN
+            eOut = eOut + "\" + eCh
+        ELSEIF eCh = CHR$(10) THEN
+            eOut = eOut + "\" + "n"
+        ELSE
+            eOut = eOut + eCh
+        END IF
+    NEXT eIdx
+    JEn$ = eOut
+END FUNCTION

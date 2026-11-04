@@ -13,13 +13,15 @@ function findQb64(): string {
   // Allow override via environment variable
   if (process.env.QB64_PATH) return process.env.QB64_PATH;
 
-  // Try to locate qb64 on PATH
-  try {
-    const cmd = os.platform() === 'win32' ? 'where qb64' : 'which qb64';
-    const result = execSync(cmd, { encoding: 'utf8' }).trim().split('\n')[0].trim();
-    if (result) return result;
-  } catch {
-    // not on PATH
+  // Try to locate qb64pe, then qb64, on PATH
+  for (const name of ['qb64pe', 'qb64']) {
+    try {
+      const cmd = os.platform() === 'win32' ? `where ${name}` : `which ${name}`;
+      const result = execSync(cmd, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim().split('\n')[0].trim();
+      if (result) return result;
+    } catch {
+      // not on PATH
+    }
   }
 
   throw new CompilerNotFoundError();
@@ -37,11 +39,17 @@ export function compileRoute(basFile: string, outDir: string): string {
   const glueFile = path.join(path.dirname(basFile), 'route.glue.bas');
   const glueSrc = fs.existsSync(glueFile) ? fs.readFileSync(glueFile, 'utf8') : '';
 
-  // Concatenation order:
-  //   1. runtime.bas  — framework STDIO loop + envelope TYPEs + JSON helpers
-  //   2. route.glue.bas — generated ParseXxx / WriteXxx SUBs for user TYPEs
-  //   3. route.bas    — user handler functions
-  const combined = runtimeSrc + '\n\n' + glueSrc + '\n\n' + userSrc;
+  // QB64 concatenation order (critical for correct compilation):
+  //   1. route.glue_decls.bas — DIM SHARED declarations (must be in main module, before any SUBs)
+  //   2. runtime.bas           — framework TYPEs, main loop, JSON helper FUNCTIONs
+  //   3. route.bas             — user's FUNCTION RunRoute$(meth) and TYPE definitions
+  //   4. route.glue.bas        — ParseXxx SUBs and WriteXxx$ FUNCTIONs
+  const glueDeclsFile = path.join(path.dirname(basFile), 'route.glue_decls.bas');
+  const glueSubsFile = path.join(path.dirname(basFile), 'route.glue.bas');
+  const glueDeclsSrc = fs.existsSync(glueDeclsFile) ? fs.readFileSync(glueDeclsFile, 'utf8') : '';
+  const glueSubsSrc = fs.existsSync(glueSubsFile) ? fs.readFileSync(glueSubsFile, 'utf8') : '';
+
+  const combined = glueDeclsSrc + '\n\n' + runtimeSrc + '\n\n' + userSrc + '\n\n' + glueSubsSrc;
 
   // Write to a temp file
   const tmpFile = path.join(os.tmpdir(), `nextjs-basic-${routeName}-${Date.now()}.bas`);
@@ -54,7 +62,8 @@ export function compileRoute(basFile: string, outDir: string): string {
   const outBin = path.join(outDir, routeName + ext);
 
   try {
-    execSync(`"${qb64}" -c "${tmpFile}" -o "${outBin}"`, {
+    // -x: headless compile (no IDE, no pause); -o needs an absolute path
+    execSync(`"${qb64}" -x "${tmpFile}" -o "${path.resolve(outBin)}"`, {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
     });

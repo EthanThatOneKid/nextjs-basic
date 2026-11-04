@@ -8,6 +8,7 @@ import {
   generateTypes,
   generateShim,
   generateQB64Glue,
+  generateQB64GlueDecls,
 } from '../codegen';
 import { ParseError } from '../types';
 
@@ -37,8 +38,8 @@ TYPE HelloBody
     age  AS INTEGER
 END TYPE
 
-FUNCTION GET (req AS Request, resp AS Response)
-    ' handler
+FUNCTION RunRoute$ (methStr AS STRING)
+    IF methStr = "GET" THEN RunRoute$ = "{}"
 END FUNCTION
 `);
     const parsed = parseBasFile(file);
@@ -54,10 +55,9 @@ END FUNCTION
 
   test('parses multiple HTTP methods', () => {
     const file = tmpBas(`
-FUNCTION GET (req AS Request, resp AS Response)
-END FUNCTION
-
-FUNCTION POST (req AS Request, resp AS Response)
+FUNCTION RunRoute$ (methStr AS STRING)
+    IF methStr = "GET" THEN RunRoute$ = "{}"
+    IF methStr = "POST" THEN RunRoute$ = "{}"
 END FUNCTION
 `);
     const parsed = parseBasFile(file);
@@ -244,10 +244,9 @@ TYPE Body
     name AS STRING * 50
 END TYPE
 
-FUNCTION GET (req AS Request, resp AS Response)
-END FUNCTION
-
-FUNCTION POST (req AS Request, resp AS Response)
+FUNCTION RunRoute$ (methStr AS STRING)
+    IF methStr = "GET" THEN RunRoute$ = "{}"
+    IF methStr = "POST" THEN RunRoute$ = "{}"
 END FUNCTION
 `);
     const parsed = parseBasFile(file);
@@ -275,12 +274,11 @@ END TYPE
     const parsed = parseBasFile(file);
     const glue = generateQB64Glue(parsed);
 
-    expect(glue).toContain('SUB ParseHelloBody (req AS Request, body AS HelloBody)');
-    expect(glue).toContain('SUB WriteHelloBody (result AS HelloBody, resp AS Response)');
-    // String field uses JsonGetString$
-    expect(glue).toContain('JsonGetString$');
-    // Integer field uses JsonGetInt%
-    expect(glue).toContain('JsonGetInt%');
+    // QB64 forbids user TYPEs as parameters: Parse takes a JSON string, Write returns one
+    expect(glue).toContain('SUB ParseHelloBody (jsonIn AS STRING)');
+    expect(glue).toContain('FUNCTION WriteHelloBody$ ()');
+    expect(glue).toContain('JStr$');
+    expect(glue).toContain('JInt%');
     // String field serialized with RTRIM$
     expect(glue).toContain('RTRIM$');
   });
@@ -298,12 +296,24 @@ END TYPE
 
   test('emits empty glue (header only) for a route with no types', () => {
     const file = tmpBas(`
-FUNCTION GET (req AS Request, resp AS Response)
+FUNCTION RunRoute$ (methStr AS STRING)
 END FUNCTION
 `);
     const parsed = parseBasFile(file);
     const glue = generateQB64Glue(parsed);
     expect(glue).toContain('AUTO-GENERATED');
     expect(glue).not.toContain('SUB Parse');
+  });
+});
+
+describe('generateQB64GlueDecls', () => {
+  test('emits one DIM SHARED per user TYPE', () => {
+    const file = tmpBas(`
+TYPE HelloBody
+    name AS STRING * 50
+END TYPE
+`);
+    const decls = generateQB64GlueDecls(parseBasFile(file));
+    expect(decls).toContain('DIM SHARED glue_HelloBody AS HelloBody');
   });
 });

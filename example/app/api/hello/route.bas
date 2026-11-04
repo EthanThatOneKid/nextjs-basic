@@ -1,6 +1,7 @@
 ' example/app/api/hello/route.bas
-' This is the ONLY file the user writes.
-' ParseHelloBody and WriteHelloResult are generated automatically.
+' User writes FUNCTION RunRoute$ which dispatches on method.
+' gReq and gResp are shared globals from runtime.bas.
+' glue_* shared vars are from route.glue.bas.
 
 TYPE HelloBody
     name AS STRING * 50
@@ -11,15 +12,21 @@ TYPE HelloResult
     language AS STRING * 20
 END TYPE
 
-FUNCTION GET (req AS Request, resp AS Response)
-    DIM body AS HelloBody
-    DIM result AS HelloResult
+FUNCTION RunRoute$ (meth AS STRING)
+    IF meth = "GET" THEN
+        ParseHelloBody RTRIM$(gReq.bodyJson)
 
-    ParseHelloBody req, body
+        IF RTRIM$(glue_HelloBody.name) = "" THEN glue_HelloBody.name = "World"
 
-    result.message  = "Hello, " + RTRIM$(body.name) + "! Greetings from QB64 BASIC."
-    result.language = "QB64 BASIC"
+        glue_HelloResult.message  = "Hello, " + RTRIM$(glue_HelloBody.name) + "! Greetings from QB64 BASIC."
+        glue_HelloResult.language = "QB64 BASIC"
 
-    WriteHelloResult result, resp
-    resp.statusCode = 200
+        gResp.statusCode = 200
+        RunRoute$ = WriteHelloResult$
+    ELSE
+        gResp.statusCode = 405
+        RunRoute$ = "{" + CHR$(34) + "error" + CHR$(34) + ":" + CHR$(34) + "Method Not Allowed" + CHR$(34) + "}"
+    END IF
 END FUNCTION
+
+

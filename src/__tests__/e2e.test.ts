@@ -19,13 +19,14 @@ import { execSync, spawnSync } from 'child_process';
 
 function findQb64(): string | null {
   if (process.env.QB64_PATH) return process.env.QB64_PATH;
-  try {
-    const cmd = os.platform() === 'win32' ? 'where qb64' : 'which qb64';
-    const result = execSync(cmd, { encoding: 'utf8' }).trim().split('\n')[0].trim();
-    return result || null;
-  } catch {
-    return null;
+  for (const name of ['qb64pe', 'qb64']) {
+    try {
+      const cmd = os.platform() === 'win32' ? `where ${name}` : `which ${name}`;
+      const result = execSync(cmd, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim().split('\n')[0].trim();
+      if (result) return result;
+    } catch { /* not on PATH */ }
   }
+  return null;
 }
 
 const QB64 = findQb64();
@@ -43,18 +44,23 @@ function compileTestBinary(basFile: string, scratchDir: string): string {
   const runtimeSrc = fs.readFileSync(RUNTIME_BAS, 'utf8');
   const userSrc = fs.readFileSync(basFile, 'utf8');
 
-  // Also bring in the glue file if it exists alongside the bas file
-  const glueFile = path.join(path.dirname(basFile), 'route.glue.bas');
-  const glueSrc = fs.existsSync(glueFile) ? fs.readFileSync(glueFile, 'utf8') : '';
+  // Regenerate glue so the test never runs against stale generated files
+  const { parseBasFile, writeGeneratedFiles } = require('../codegen');
+  writeGeneratedFiles(parseBasFile(basFile));
 
-  const combined = runtimeSrc + '\n\n' + glueSrc + '\n\n' + userSrc;
+  // Same order as compiler.ts: decls, runtime, user route, glue subs
+  const read = (f: string) => {
+    const p = path.join(path.dirname(basFile), f);
+    return fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : '';
+  };
+  const combined = read('route.glue_decls.bas') + '\n\n' + runtimeSrc + '\n\n' + userSrc + '\n\n' + read('route.glue.bas');
   const tmpBas = path.join(scratchDir, 'test.bas');
   fs.writeFileSync(tmpBas, combined, 'utf8');
 
   const ext = os.platform() === 'win32' ? '.exe' : '';
   const outBin = path.join(scratchDir, 'runtime' + ext);
 
-  const result = spawnSync(QB64!, ['-c', tmpBas, '-o', outBin], {
+  const result = spawnSync(QB64!, ['-x', tmpBas, '-o', path.resolve(outBin)], {
     encoding: 'utf8',
     timeout: 60000,
   });
@@ -89,7 +95,7 @@ function sendRequest(binPath: string, payload: object): Promise<object> {
       }
     });
 
-    proc.stdin.write(JSON.stringify({ ...payload, _id: 'test-1' }) + '\n');
+    proc.stdin.write(JSON.stringify({ _id: 'test-1', ...payload }) + '\n');
   });
 }
 
