@@ -30,6 +30,11 @@ function findQb64(): string | null {
 }
 
 const QB64 = findQb64();
+
+/** Progress lines on stderr (set E2E_TRACE=1), written at once so a hang shows where it stopped. */
+function trace(message: string): void {
+  if (process.env.E2E_TRACE) process.stderr.write(`[e2e ${new Date().toISOString()}] ${message}\n`);
+}
 const describeE2E = QB64 ? describe : describe.skip;
 
 // CI sets REQUIRE_QB64 so a missing compiler fails the run instead of skipping the e2e tests
@@ -78,10 +83,13 @@ function compileTestBinary(basFile: string, scratchDir: string, name: string): s
 
   fs.mkdirSync(path.join(scratchDir, 'bin'), { recursive: true });
   const outBin = path.join(scratchDir, 'bin', name + (os.platform() === 'win32' ? '.exe' : ''));
+  trace(`compiling ${name}`);
   const result = spawnSync(QB64!, ['-x', tmpBas, '-o', path.resolve(outBin)], {
     encoding: 'utf8',
     timeout: 120000,
+    killSignal: 'SIGKILL',
   });
+  trace(`compiled ${name}: status=${result.status} signal=${result.signal}`);
   if (result.status !== 0 || !fs.existsSync(outBin)) {
     const shown = (result.stdout || '').split('\n').filter(l => l.trim() && !l.startsWith('[')).join('\n');
     // QB64 keeps the C++ compiler's output in its own log next to the compiler
@@ -102,6 +110,8 @@ interface Reply {
 }
 
 /** One long-lived route process, like the real runtime keeps. */
+const liveClients = new Set<Client>();
+
 class Client {
   private proc: ChildProcess;
   private waiting: Array<(line: string) => void> = [];
@@ -111,18 +121,24 @@ class Client {
 
   constructor(bin: string) {
     this.proc = spawn(bin, [], { stdio: ['pipe', 'pipe', 'inherit'] });
+    liveClients.add(this);
+    trace(`spawned ${path.basename(bin)} pid=${this.proc.pid}`);
     const rl = readline.createInterface({ input: this.proc.stdout! });
     rl.on('line', line => {
       const w = this.waiting.shift();
       if (w) w(line); else this.buffered.push(line);
     });
-    this.exited = new Promise(resolve => this.proc.on('exit', () => resolve()));
+    this.exited = new Promise(resolve => this.proc.on('exit', (code, signal) => {
+      liveClients.delete(this);
+      trace(`exited ${path.basename(bin)} code=${code} signal=${signal}`);
+      resolve();
+    }));
   }
 
   call(payload: Record<string, unknown>): Promise<Reply> {
     const id = String(++this.n);
     return new Promise<Reply>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('no response within 5s')), 5000);
+      const timer = setTimeout(() => { trace(`no response to request ${id}`); reject(new Error('no response within 5s')); }, 5000);
       const onLine = (line: string) => {
         clearTimeout(timer);
         const wire = JSON.parse(line);
@@ -153,6 +169,8 @@ class Client {
   }
 }
 
+beforeEach(() => trace(`test: ${expect.getState().currentTestName}`));
+
 let scratch: string;
 const bins: Record<string, string> = {};
 
@@ -166,6 +184,7 @@ beforeAll(() => {
 }, 600000);
 
 afterAll(() => {
+  for (const c of [...liveClients]) c.kill();
   if (scratch) try { fs.rmSync(scratch, { recursive: true, force: true }); } catch { /* ignore */ }
 });
 

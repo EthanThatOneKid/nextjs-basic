@@ -13,7 +13,7 @@ jobs:
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -82,8 +82,9 @@ jobs:
         run: npx tsc --noEmit
 
       - name: Run tests
-        run: npm test
+        run: npm test -- --runInBand --verbose --forceExit
         env:
+          E2E_TRACE: '1'
           # fail instead of silently skipping the e2e tests when no compiler is found
           REQUIRE_QB64: '1'
 
