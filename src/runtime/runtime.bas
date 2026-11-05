@@ -8,6 +8,8 @@ $CONSOLE:ONLY
 '   Ctx                            method, path, raw JSON of body/query/headers/params
 '   Query$, Header$, Param$        read the query string, headers, dynamic segments
 '   Respond code                   set the HTTP status (default 200)
+'   SetHeader name, value          add a response header (repeat for Set-Cookie)
+'   AllowCors origin               CORS headers for this route (generated)
 '   Fail code, "message"           stop the handler and send {"error": "message"}
 '
 ' QB64 rules applied here:
@@ -45,6 +47,7 @@ DIM SHARED gReply AS Reply
 DIM SHARED gFailed AS INTEGER
 DIM SHARED gFailCode AS INTEGER
 DIM SHARED gFailMsg AS STRING
+DIM SHARED gHeaders AS STRING
 
 ' ---------------------------------------------------------------------------
 ' Main STDIO loop: one JSON request line in, one JSON response line out
@@ -72,6 +75,7 @@ DO
     gFailed = 0
     gFailCode = 500
     gFailMsg = ""
+    gHeaders = ""
     gReply.statusCode = 200
     gReply.bodyJson   = "{}"
     gReply.reqId      = Ctx.reqId
@@ -88,7 +92,7 @@ afterCall:
         gReply.bodyJson = "{" + CHR$(34) + "error" + CHR$(34) + ":" + CHR$(34) + JEn$(gFailMsg) + CHR$(34) + "}"
     END IF
 
-    PRINT BldResp$(RTRIM$(gReply.reqId), gReply.statusCode, RTRIM$(gReply.bodyJson))
+    PRINT BldResp$(RTRIM$(gReply.reqId), gReply.statusCode, RTRIM$(gReply.bodyJson), gHeaders)
     _DELAY 0
 LOOP
 
@@ -121,6 +125,36 @@ RESUME afterCall
 SUB Respond (code AS INTEGER)
     gReply.statusCode = code
 END SUB
+
+' Add a response header. Repeating a name adds another header (Set-Cookie needs
+' this). Headers set before a Fail are still sent.
+SUB SetHeader (hname AS STRING, hvalue AS STRING)
+    IF HdrOk%(hname, hvalue) = 0 THEN Fail 500, "Invalid response header: " + hname
+    IF gHeaders <> "" THEN gHeaders = gHeaders + ","
+    gHeaders = gHeaders + "[" + CHR$(34) + JEn$(hname) + CHR$(34) + "," + CHR$(34) + JEn$(hvalue) + CHR$(34) + "]"
+END SUB
+
+' A header name must be an HTTP token; a value must not hold CR, LF or NUL, which
+' would split the response.
+FUNCTION HdrOk% (hname AS STRING, hvalue AS STRING)
+    DIM hIdx AS LONG
+    DIM hCode AS INTEGER
+
+    HdrOk% = 0
+    IF LEN(hname) = 0 THEN EXIT FUNCTION
+
+    FOR hIdx = 1 TO LEN(hname)
+        hCode = ASC(MID$(hname, hIdx, 1))
+        IF NOT ((hCode >= 48 AND hCode <= 57) OR (hCode >= 65 AND hCode <= 90) OR (hCode >= 97 AND hCode <= 122) OR INSTR("!#$%&'*+-.^_`|~", CHR$(hCode)) > 0) THEN EXIT FUNCTION
+    NEXT hIdx
+
+    FOR hIdx = 1 TO LEN(hvalue)
+        hCode = ASC(MID$(hvalue, hIdx, 1))
+        IF hCode = 0 OR hCode = 10 OR hCode = 13 THEN EXIT FUNCTION
+    NEXT hIdx
+
+    HdrOk% = -1
+END FUNCTION
 
 SUB Fail (code AS INTEGER, msg AS STRING)
     gFailed = -1
@@ -209,11 +243,12 @@ FUNCTION JInt% (jsonIn AS STRING, kn AS STRING)
     JInt% = VAL(JVal$(jsonIn, kn))
 END FUNCTION
 
-FUNCTION BldResp$ (rid AS STRING, sc AS INTEGER, bj AS STRING)
+FUNCTION BldResp$ (rid AS STRING, sc AS INTEGER, bj AS STRING, hdrs AS STRING)
     BldResp$ = "{" + _
         CHR$(34) + "_id" + CHR$(34) + ":" + CHR$(34) + JEn$(rid) + CHR$(34) + "," + _
         CHR$(34) + "statusCode" + CHR$(34) + ":" + LTRIM$(STR$(sc)) + "," + _
-        CHR$(34) + "bodyJson" + CHR$(34) + ":" + CHR$(34) + JEn$(bj) + CHR$(34) + _
+        CHR$(34) + "bodyJson" + CHR$(34) + ":" + CHR$(34) + JEn$(bj) + CHR$(34) + "," + _
+        CHR$(34) + "headers" + CHR$(34) + ":[" + hdrs + "]" + _
         "}"
 END FUNCTION
 
