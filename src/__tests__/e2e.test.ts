@@ -81,7 +81,10 @@ function compileTestBinary(basFile: string, scratchDir: string, name: string): s
   });
   if (result.status !== 0 || !fs.existsSync(outBin)) {
     const shown = (result.stdout || '').split('\n').filter(l => l.trim() && !l.startsWith('[')).join('\n');
-    throw new Error(`QB64 compile failed for ${name}:\n${shown}${result.stderr}`);
+    // QB64 keeps the C++ compiler's output in its own log next to the compiler
+    const logFile = path.join(path.dirname(QB64!), 'internal', 'temp', 'compilelog.txt');
+    const log = fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8').split('\n').slice(-40).join('\n') : '(no compile log)';
+    throw new Error(`QB64 compile failed for ${name}:\n${shown}${result.stderr}\n--- compile log (last lines) ---\n${log}`);
   }
   return outBin;
 }
