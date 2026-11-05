@@ -1,17 +1,17 @@
 // src/__tests__/e2e.test.ts
 //
-// End-to-end tests: compile the example route.bas with QB64 and exercise the
-// full STDIO runtime loop via the Node.js basicRuntime.
+// End-to-end tests: compile real routes with QB64 and talk to them over STDIO,
+// exactly as the Node runtime does.
 //
-// These tests are SKIPPED automatically when QB64 is not installed on the
-// machine (no "qb64" on PATH and QB64_PATH not set). CI on GitHub Actions
-// does not have QB64, so the skip is the expected outcome there.
-// Run locally after installing QB64: https://qb64.com
+// Skipped automatically when no QB64 compiler is found (QB64_PATH, qb64pe or qb64
+// on PATH). The Windows CI job installs QB64-PE, so they run there.
 
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { execSync, spawnSync } from 'child_process';
+import { execSync, spawn, spawnSync, ChildProcess } from 'child_process';
+import * as readline from 'readline';
+import { parseBasFile, writeGeneratedFiles } from '../codegen';
 
 // ---------------------------------------------------------------------------
 // QB64 availability check
@@ -30,320 +30,366 @@ function findQb64(): string | null {
 }
 
 const QB64 = findQb64();
-const SKIP = !QB64;
+const describeE2E = QB64 ? describe : describe.skip;
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-const EXAMPLE_BAS = path.join(__dirname, '..', '..', 'example', 'app', 'api', 'hello', 'route.bas');
-const ECHO_BAS    = path.join(__dirname, '..', '..', 'example', 'app', 'api', 'echo',  'route.bas');
+const API = path.join(__dirname, '..', '..', 'example', 'app', 'api');
+const HELLO_BAS = path.join(API, 'hello', 'route.bas');
+const ECHO_BAS = path.join(API, 'echo', 'route.bas');
+const USERS_BAS = path.join(API, 'users', '[id]', 'route.bas');
+const TYPES_BAS = path.join(__dirname, 'fixtures', 'types', 'route.bas');
 const RUNTIME_BAS = path.join(__dirname, '..', 'runtime', 'runtime.bas');
 
-function compileTestBinary(basFile: string, scratchDir: string): string {
-  const runtimeSrc = fs.readFileSync(RUNTIME_BAS, 'utf8');
-  const userSrc = fs.readFileSync(basFile, 'utf8');
+/**
+ * Same order as compiler.ts: decls, runtime, user route, glue. The route is copied
+ * into the scratch folder first so generated files never land in the source tree.
+ */
+function compileTestBinary(basFile: string, scratchDir: string, name: string): string {
+  const routeDir = path.join(scratchDir, name);
+  fs.mkdirSync(routeDir, { recursive: true });
+  const copy = path.join(routeDir, 'route.bas');
+  fs.copyFileSync(basFile, copy);
+  writeGeneratedFiles(parseBasFile(copy));
 
-  // Regenerate glue so the test never runs against stale generated files
-  const { parseBasFile, writeGeneratedFiles } = require('../codegen');
-  writeGeneratedFiles(parseBasFile(basFile));
-
-  // Same order as compiler.ts: decls, runtime, user route, glue subs
   const read = (f: string) => {
-    const p = path.join(path.dirname(basFile), f);
+    const p = path.join(routeDir, f);
     return fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : '';
   };
-  const combined = read('route.glue_decls.bas') + '\n\n' + runtimeSrc + '\n\n' + userSrc + '\n\n' + read('route.glue.bas');
-  const tmpBas = path.join(scratchDir, 'test.bas');
+  const combined =
+    read('route.glue_decls.bas') + '\n\n' +
+    fs.readFileSync(RUNTIME_BAS, 'utf8') + '\n\n' +
+    fs.readFileSync(copy, 'utf8') + '\n\n' +
+    read('route.glue.bas');
+
+  const tmpBas = path.join(routeDir, 'combined.bas');
   fs.writeFileSync(tmpBas, combined, 'utf8');
 
-  const ext = os.platform() === 'win32' ? '.exe' : '';
-  const outBin = path.join(scratchDir, 'runtime' + ext);
-
+  const outBin = path.join(scratchDir, name + (os.platform() === 'win32' ? '.exe' : ''));
   const result = spawnSync(QB64!, ['-x', tmpBas, '-o', path.resolve(outBin)], {
     encoding: 'utf8',
-    timeout: 60000,
+    timeout: 120000,
   });
-
-  if (result.status !== 0) {
-    throw new Error(`QB64 compile failed:\n${result.stderr}`);
+  if (result.status !== 0 || !fs.existsSync(outBin)) {
+    const shown = (result.stdout || '').split('\n').filter(l => l.trim() && !l.startsWith('[')).join('\n');
+    throw new Error(`QB64 compile failed for ${name}:\n${shown}${result.stderr}`);
   }
-
   return outBin;
 }
 
-function sendRequest(binPath: string, payload: object): Promise<object> {
-  return new Promise((resolve, reject) => {
-    const { spawn } = require('child_process');
-    const readline = require('readline');
+interface Reply {
+  id: string;
+  status: number;
+  /** Parsed response body */
+  body: any;
+}
 
-    const proc = spawn(binPath, [], { stdio: ['pipe', 'pipe', 'inherit'] });
-    const rl = readline.createInterface({ input: proc.stdout });
+/** One long-lived route process, like the real runtime keeps. */
+class Client {
+  private proc: ChildProcess;
+  private waiting: Array<(line: string) => void> = [];
+  private buffered: string[] = [];
+  readonly exited: Promise<void>;
+  private n = 0;
 
-    const timer = setTimeout(() => {
-      proc.kill();
-      reject(new Error('QB64 binary timeout after 5s'));
-    }, 5000);
-
-    rl.once('line', (line: string) => {
-      clearTimeout(timer);
-      proc.kill();
-      try {
-        resolve(JSON.parse(line));
-      } catch (e) {
-        reject(new Error(`Bad JSON from binary: ${line}`));
-      }
+  constructor(bin: string) {
+    this.proc = spawn(bin, [], { stdio: ['pipe', 'pipe', 'inherit'] });
+    const rl = readline.createInterface({ input: this.proc.stdout! });
+    rl.on('line', line => {
+      const w = this.waiting.shift();
+      if (w) w(line); else this.buffered.push(line);
     });
+    this.exited = new Promise(resolve => this.proc.on('exit', () => resolve()));
+  }
 
-    proc.stdin.write(JSON.stringify({ _id: 'test-1', ...payload }) + '\n');
-  });
+  call(payload: Record<string, unknown>): Promise<Reply> {
+    const id = String(++this.n);
+    return new Promise<Reply>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('no response within 5s')), 5000);
+      const onLine = (line: string) => {
+        clearTimeout(timer);
+        const wire = JSON.parse(line);
+        resolve({ id: wire._id, status: wire.statusCode, body: JSON.parse(wire.bodyJson) });
+      };
+      const early = this.buffered.shift();
+      if (early !== undefined) onLine(early); else this.waiting.push(onLine);
+      this.proc.stdin!.write(JSON.stringify({ _id: id, endpoint: 'test', path: '/t', bodyJson: '{}', ...payload }) + '\n');
+    });
+  }
+
+  get(query: Record<string, unknown> = {}, extra: Record<string, unknown> = {}) {
+    return this.call({ method: 'GET', queryJson: JSON.stringify(query), ...extra });
+  }
+
+  post(body: unknown, method = 'POST') {
+    return this.call({ method, bodyJson: JSON.stringify(body) });
+  }
+
+  async quit(): Promise<void> {
+    this.proc.stdin!.write('{"_quit":true}\n');
+    await Promise.race([this.exited, new Promise(r => setTimeout(r, 3000))]);
+    if (this.proc.exitCode === null) this.proc.kill();
+  }
+
+  kill() {
+    try { this.proc.kill(); } catch { /* already dead */ }
+  }
 }
 
+let scratch: string;
+const bins: Record<string, string> = {};
+
+beforeAll(() => {
+  if (!QB64) return;
+  scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'nb-e2e-'));
+  bins.hello = compileTestBinary(HELLO_BAS, scratch, 'hello');
+  bins.echo = compileTestBinary(ECHO_BAS, scratch, 'echo');
+  bins.users = compileTestBinary(USERS_BAS, scratch, 'users');
+  bins.types = compileTestBinary(TYPES_BAS, scratch, 'types');
+}, 600000);
+
+afterAll(() => {
+  if (scratch) try { fs.rmSync(scratch, { recursive: true, force: true }); } catch { /* ignore */ }
+});
+
 // ---------------------------------------------------------------------------
-// Tests
+// hello: GET reads Req from the query string
 // ---------------------------------------------------------------------------
 
-const describeE2E = SKIP ? describe.skip : describe;
+describeE2E('hello route (GET, query -> Req)', () => {
+  let c: Client;
+  beforeEach(() => { c = new Client(bins.hello); });
+  afterEach(() => c.kill());
 
-describeE2E('QB64 e2e — example hello route', () => {
-  let scratchDir: string;
-  let binPath: string;
-
-  beforeAll(() => {
-    scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nb-e2e-'));
-    console.log(`[e2e] Compiling with QB64 at: ${QB64}`);
-    binPath = compileTestBinary(EXAMPLE_BAS, scratchDir);
-    console.log(`[e2e] Binary: ${binPath}`);
+  test('uses the name from the query string', async () => {
+    const r = await c.get({ name: 'Ada' });
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual({ message: 'Hello, Ada! Greetings from QB64 BASIC.', language: 'QB64 BASIC' });
   });
 
-  afterAll(() => {
-    try { fs.rmSync(scratchDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  test('defaults to World, and does not read the body on GET', async () => {
+    const r = await c.get({}, { bodyJson: JSON.stringify({ name: 'FromBody' }) });
+    expect(r.body.message).toContain('Hello, World!');
   });
 
-  test('binary exists and is executable', () => {
-    expect(fs.existsSync(binPath)).toBe(true);
-    const stat = fs.statSync(binPath);
-    expect(stat.size).toBeGreaterThan(0);
+  test('request fields do not leak into the next request', async () => {
+    await c.get({ name: 'First' });
+    const r = await c.get({});
+    expect(r.body.message).toContain('Hello, World!');
   });
 
-  test('GET returns a greeting from BASIC', async () => {
-    const resp = await sendRequest(binPath, {
-      method: 'GET',
-      path: '/api/hello',
-      endpoint: 'hello',
-      bodyJson: JSON.stringify({ name: 'Kiroween' }),
-    }) as Record<string, unknown>;
-
-    expect(resp['statusCode']).toBe(200);
-    const body = JSON.parse(resp['bodyJson'] as string);
-    expect(body.message).toContain('Kiroween');
-    expect(body.language).toBe('QB64 BASIC');
+  test('methods the route does not define return 405', async () => {
+    const r = await c.post({ name: 'x' });
+    expect(r.status).toBe(405);
+    expect(r.body).toEqual({ error: 'Method Not Allowed' });
   });
 
-  test('GET with no name defaults to World', async () => {
-    const resp = await sendRequest(binPath, {
-      method: 'GET',
-      path: '/api/hello',
-      endpoint: 'hello',
-      bodyJson: '{}',
-    }) as Record<string, unknown>;
-
-    const body = JSON.parse(resp['bodyJson'] as string);
-    expect(body.message).toContain('World');
+  test('lowercase method names still dispatch', async () => {
+    const r = await c.call({ method: 'get', queryJson: JSON.stringify({ name: 'Low' }) });
+    expect(r.status).toBe(200);
   });
 
-  test('unknown method returns 405', async () => {
-    const resp = await sendRequest(binPath, {
-      method: 'TRACE',
-      path: '/api/hello',
-      endpoint: 'hello',
-      bodyJson: '{}',
-    }) as Record<string, unknown>;
-
-    expect(resp['statusCode']).toBe(405);
-  });
-
-  test('_id is echoed back in the response', async () => {
-    const resp = await sendRequest(binPath, {
-      method: 'GET',
-      path: '/api/hello',
-      endpoint: 'hello',
-      bodyJson: '{}',
-      _id: 'test-1',
-    }) as Record<string, unknown>;
-
-    expect(resp['_id']).toBe('test-1');
+  test('the request id is echoed back', async () => {
+    const r = await c.get({ name: 'x' });
+    expect(r.id).toBe('1');
+    const r2 = await c.get({ name: 'x' });
+    expect(r2.id).toBe('2');
   });
 });
 
-describeE2E('QB64 e2e — example echo route (POST)', () => {
-  let scratchDir: string;
-  let binPath: string;
+// ---------------------------------------------------------------------------
+// echo: POST reads Req from the JSON body, Fail ends the handler
+// ---------------------------------------------------------------------------
 
-  beforeAll(() => {
-    scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nb-echo-e2e-'));
+describeE2E('echo route (POST, body -> Req, Fail)', () => {
+  let c: Client;
+  beforeEach(() => { c = new Client(bins.echo); });
+  afterEach(() => c.kill());
 
-    // The echo route needs a glue file generated from its TYPE blocks.
-    // Run codegen inline here since we can't run the full plugin in tests.
-    const { parseBasFile, writeGeneratedFiles } = require('../codegen');
-    const parsed = parseBasFile(ECHO_BAS);
-    writeGeneratedFiles(parsed);
-
-    console.log(`[e2e] Compiling echo route with QB64 at: ${QB64}`);
-    binPath = compileTestBinary(ECHO_BAS, scratchDir);
-    console.log(`[e2e] Echo binary: ${binPath}`);
+  test('repeats the message', async () => {
+    const r = await c.post({ message: 'BASIC', count: 3 });
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual({ result: 'BASIC BASIC BASIC', repeats: 3 });
   });
 
-  afterAll(() => {
-    try { fs.rmSync(scratchDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  test('count is clamped to 1..10', async () => {
+    expect((await c.post({ message: 'a', count: 0 })).body.repeats).toBe(1);
+    expect((await c.post({ message: 'a', count: 99 })).body.repeats).toBe(10);
+    expect((await c.post({ message: 'a' })).body.repeats).toBe(1);
   });
 
-  test('binary exists and is executable', () => {
-    expect(fs.existsSync(binPath)).toBe(true);
-    expect(fs.statSync(binPath).size).toBeGreaterThan(0);
+  test('Fail stops the handler and sends the error', async () => {
+    const r = await c.post({ count: 2 });
+    expect(r.status).toBe(400);
+    expect(r.body).toEqual({ error: 'message is required' });
   });
 
-  test('POST repeats message the requested number of times', async () => {
-    const resp = await sendRequest(binPath, {
-      method: 'POST',
-      path: '/api/echo',
-      endpoint: 'echo',
-      bodyJson: JSON.stringify({ message: 'BASIC', count: 3 }),
-    }) as Record<string, unknown>;
-
-    expect(resp['statusCode']).toBe(200);
-    const body = JSON.parse(resp['bodyJson'] as string);
-    expect(body.result).toBe('BASIC BASIC BASIC');
-    expect(body.repeats).toBe(3);
+  test('quotes, backslashes, newlines and unicode survive both directions', async () => {
+    const message = 'say "hi" \\ back\nline é';
+    const r = await c.post({ message, count: 1 });
+    expect(r.body.result).toBe(message);
   });
 
-  test('POST with count 1 returns the message once', async () => {
-    const resp = await sendRequest(binPath, {
-      method: 'POST',
-      path: '/api/echo',
-      endpoint: 'echo',
-      bodyJson: JSON.stringify({ message: 'Hello', count: 1 }),
-    }) as Record<string, unknown>;
-
-    const body = JSON.parse(resp['bodyJson'] as string);
-    expect(body.result).toBe('Hello');
-    expect(body.repeats).toBe(1);
+  test('an integer outside the INTEGER range is rejected, not wrapped', async () => {
+    const r = await c.post({ message: 'x', count: 99999 });
+    expect(r.status).toBe(400);
+    expect(r.body.error).toContain('count is out of range');
   });
 
-  test('POST with count 0 defaults to 1 repeat', async () => {
-    const resp = await sendRequest(binPath, {
-      method: 'POST',
-      path: '/api/echo',
-      endpoint: 'echo',
-      bodyJson: JSON.stringify({ message: 'QB64', count: 0 }),
-    }) as Record<string, unknown>;
-
-    const body = JSON.parse(resp['bodyJson'] as string);
-    expect(body.repeats).toBe(1);
+  test('numbers sent as strings are accepted', async () => {
+    const r = await c.post({ message: 'x', count: '2' });
+    expect(r.body.repeats).toBe(2);
   });
 
-  test('POST caps count at 10', async () => {
-    const resp = await sendRequest(binPath, {
-      method: 'POST',
-      path: '/api/echo',
-      endpoint: 'echo',
-      bodyJson: JSON.stringify({ message: 'x', count: 99 }),
-    }) as Record<string, unknown>;
-
-    const body = JSON.parse(resp['bodyJson'] as string);
-    expect(body.repeats).toBe(10);
+  test('GET returns 405 because only POST is defined', async () => {
+    const r = await c.get();
+    expect(r.status).toBe(405);
   });
 
-  test('GET returns 405 on echo route (only POST defined)', async () => {
-    const resp = await sendRequest(binPath, {
-      method: 'GET',
-      path: '/api/echo',
-      endpoint: 'echo',
-      bodyJson: '{}',
-    }) as Record<string, unknown>;
+  test('survives many failures in a row and still answers', async () => {
+    for (let i = 0; i < 300; i++) {
+      expect((await c.post({})).status).toBe(400);
+    }
+    const ok = await c.post({ message: 'still alive', count: 1 });
+    expect(ok.status).toBe(200);
+    expect(ok.body.result).toBe('still alive');
+  }, 30000);
 
-    expect(resp['statusCode']).toBe(405);
-  });
-
-  test('_id is echoed back in response', async () => {
-    const resp = await sendRequest(binPath, {
-      method: 'POST',
-      path: '/api/echo',
-      endpoint: 'echo',
-      bodyJson: JSON.stringify({ message: 'id-test', count: 1 }),
-      _id: 'echo-42',
-    }) as Record<string, unknown>;
-
-    expect(resp['_id']).toBe('echo-42');
+  test('malformed input does not crash the process', async () => {
+    const r = await c.call({ method: 'POST', bodyJson: '{"message": "unterminated' });
+    expect([200, 400]).toContain(r.status);
+    const ok = await c.post({ message: 'after', count: 1 });
+    expect(ok.body.result).toBe('after');
   });
 });
 
+// ---------------------------------------------------------------------------
+// users/[id]: Param$, Query$, Header$
+// ---------------------------------------------------------------------------
 
+describeE2E('users/[id] route (Param$, Query$, Header$)', () => {
+  let c: Client;
+  beforeEach(() => { c = new Client(bins.users); });
+  afterEach(() => c.kill());
 
-// Always-visible skip notice when QB64 is absent
-if (SKIP) {
-  test('QB64 e2e tests SKIPPED — qb64 not found on PATH (set QB64_PATH to enable)', () => {
-    console.log('Install QB64 from https://qb64.com to run e2e tests locally.');
-    expect(true).toBe(true);
-  });
-}
-
-const USERS_BAS = path.join(__dirname, '..', '..', 'example', 'app', 'api', 'users', '[id]', 'route.bas');
-
-describeE2E('QB64 e2e — request context (query, headers, params)', () => {
-  let scratchDir: string;
-  let helloBin: string;
-  let usersBin: string;
-
-  beforeAll(() => {
-    scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nb-ctx-e2e-'));
-    fs.mkdirSync(path.join(scratchDir, 'hello'));
-    fs.mkdirSync(path.join(scratchDir, 'users'));
-    helloBin = compileTestBinary(EXAMPLE_BAS, path.join(scratchDir, 'hello'));
-    usersBin = compileTestBinary(USERS_BAS, path.join(scratchDir, 'users'));
-  });
-
-  afterAll(() => {
-    try { fs.rmSync(scratchDir, { recursive: true, force: true }); } catch { /* ignore */ }
-  });
-
-  test('Query$ reads the query string when the body has no name', async () => {
-    const resp = await sendRequest(helloBin, {
-      method: 'GET',
-      path: '/api/hello',
-      endpoint: 'hello',
-      bodyJson: '{}',
-      queryJson: JSON.stringify({ name: 'Ada' }),
-      headersJson: '{}',
-      paramsJson: '{}',
-    }) as Record<string, unknown>;
-    const body = JSON.parse(resp['bodyJson'] as string);
-    expect(body.message).toContain('Hello, Ada!');
-  });
-
-  test('Param$, Query$ and Header$ reach the route', async () => {
-    const resp = await sendRequest(usersBin, {
-      method: 'GET',
-      path: '/api/users/42',
-      endpoint: 'users___id_',
-      bodyJson: '{}',
-      queryJson: JSON.stringify({ verbose: '1' }),
-      headersJson: JSON.stringify({ 'user-agent': 'jest' }),
+  test('reads param, query and header', async () => {
+    const r = await c.get({ verbose: '1' }, {
       paramsJson: JSON.stringify({ id: '42' }),
-    }) as Record<string, unknown>;
-    expect(resp['statusCode']).toBe(200);
-    const body = JSON.parse(resp['bodyJson'] as string);
-    expect(body).toEqual({ id: '42', verbose: '1', agent: 'jest' });
+      headersJson: JSON.stringify({ 'user-agent': 'jest' }),
+    });
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual({ id: '42', verbose: '1', agent: 'jest' });
   });
 
-  test('missing query, header and param come back empty', async () => {
-    const resp = await sendRequest(usersBin, {
-      method: 'GET',
-      path: '/api/users/x',
-      endpoint: 'users___id_',
-      bodyJson: '{}',
-    }) as Record<string, unknown>;
-    const body = JSON.parse(resp['bodyJson'] as string);
-    expect(body).toEqual({ id: '', verbose: '', agent: '' });
+  test('Header$ ignores the case of the name it is given', async () => {
+    const r = await c.get({}, { paramsJson: '{"id":"1"}', headersJson: '{"user-agent":"x"}' });
+    expect(r.body.agent).toBe('x');
+  });
+
+  test('missing values come back empty', async () => {
+    const r = await c.get({}, { paramsJson: '{"id":"7"}' });
+    expect(r.body).toEqual({ id: '7', verbose: '', agent: '' });
+  });
+
+  test('Fail can send a 404', async () => {
+    const r = await c.get({}, { paramsJson: '{"id":"0"}' });
+    expect(r.status).toBe(404);
+    expect(r.body).toEqual({ error: 'user not found' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// types fixture: every field type, both directions
+// ---------------------------------------------------------------------------
+
+describeE2E('field types round trip', () => {
+  let c: Client;
+  beforeEach(() => { c = new Client(bins.types); });
+  afterEach(() => c.kill());
+
+  const sample = {
+    anInt: -123, aLong: 2000000000, aDouble: -0.25, aSingle: 0.5,
+    aBig: 123456789012, aByte: 200, note: 'a "quoted" note',
+  };
+
+  test('POST body -> Req -> Resp -> JSON', async () => {
+    const r = await c.post(sample);
+    expect(r.status).toBe(200);
+    expect(r.body).toMatchObject(sample);
+  });
+
+  test('GET query strings (all text) fill the same fields', async () => {
+    const asText = Object.fromEntries(Object.entries(sample).map(([k, v]) => [k, String(v)]));
+    const r = await c.get(asText);
+    expect(r.body).toMatchObject(sample);
+  });
+
+  test('fractions below one are written as valid JSON', async () => {
+    const r = await c.post({ aDouble: 0.125, aSingle: -0.5 });
+    expect(r.body.aDouble).toBe(0.125);
+    expect(r.body.aSingle).toBe(-0.5);
+  });
+
+  test('missing fields are empty or zero', async () => {
+    const r = await c.post({});
+    expect(r.body).toMatchObject({ anInt: 0, aLong: 0, aDouble: 0, aSingle: 0, aBig: 0, aByte: 0, note: '' });
+  });
+
+  test('Resp is cleared between requests', async () => {
+    const first = await c.post({ anInt: 7 });
+    expect(first.body.onlyWhenSeven).toBe(1);
+    const second = await c.post({ anInt: 8 });
+    expect(second.body.onlyWhenSeven).toBe(0);
+  });
+
+  test.each([
+    ['anInt', 40000],
+    ['anInt', -40000],
+    ['aLong', 3000000000],
+    ['aByte', 300],
+    ['aByte', -1],
+  ])('%s = %p is out of range', async (field, value) => {
+    const r = await c.post({ [field]: value });
+    expect(r.status).toBe(400);
+    expect(r.body.error).toBe(`${field} is out of range`);
+  });
+
+  test('integer limits are accepted', async () => {
+    const r = await c.post({ anInt: 32767, aLong: -2147483648, aByte: 255 });
+    expect(r.status).toBe(200);
+    expect(r.body).toMatchObject({ anInt: 32767, aLong: -2147483648, aByte: 255 });
+  });
+
+  test('Respond sets a custom status', async () => {
+    const r = await c.post({ anInt: 1 }, 'PUT');
+    expect(r.status).toBe(201);
+    expect(r.body.anInt).toBe(1);
+  });
+
+  test('Fail escapes quotes in the message', async () => {
+    const r = await c.post({}, 'DELETE');
+    expect(r.status).toBe(418);
+    expect(r.body).toEqual({ error: 'teapot says "no"' });
+  });
+
+  test('a long string is cut to the field size', async () => {
+    const r = await c.post({ note: 'x'.repeat(100) });
+    expect(r.body.note).toBe('x'.repeat(40));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// process lifecycle
+// ---------------------------------------------------------------------------
+
+describeE2E('process lifecycle', () => {
+  test('the {"_quit":true} message ends the process', async () => {
+    const c = new Client(bins.hello);
+    await c.get({ name: 'x' });
+    const start = Date.now();
+    await c.quit();
+    expect(Date.now() - start).toBeLessThan(2500);
   });
 });

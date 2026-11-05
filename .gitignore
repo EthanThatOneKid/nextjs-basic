@@ -12,3 +12,7 @@ example/app/api/**/route.ts
 example/app/api/**/route.types.ts
 smoke.js
 dev.log
+
+src/__tests__/fixtures/**/route.ts
+src/__tests__/fixtures/**/route.types.ts
+src/__tests__/fixtures/**/route.glue*.bas

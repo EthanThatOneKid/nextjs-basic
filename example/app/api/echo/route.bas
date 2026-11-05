@@ -1,46 +1,34 @@
 ' example/app/api/echo/route.bas
-' POST example: accepts a message and count, returns the message repeated.
+' POST /api/echo  {"message": "BASIC", "count": 3}
+' For POST, Req is filled from the JSON body.
 
-TYPE EchoRequest
+TYPE Request
     message AS STRING * 200
     count   AS INTEGER
 END TYPE
 
-TYPE EchoResponse
+TYPE Response
     result  AS STRING * 4000
     repeats AS INTEGER
 END TYPE
 
-FUNCTION RunRoute$ (meth AS STRING)
-    IF meth = "POST" THEN
-        ParseEchoRequest RTRIM$(gReq.bodyJson)
+SUB OnPost
+    DIM n AS INTEGER
+    DIM idx AS INTEGER
+    DIM joined AS STRING
 
-        DIM msg AS STRING
-        DIM n AS INTEGER
-        DIM idx AS INTEGER
-        DIM outStr AS STRING
+    IF RTRIM$(Req.message) = "" THEN Fail 400, "message is required"
 
-        msg = RTRIM$(glue_EchoRequest.message)
-        n = glue_EchoRequest.count
+    n = Req.count
+    IF n < 1 THEN n = 1
+    IF n > 10 THEN n = 10
 
-        IF n < 1 THEN n = 1
-        IF n > 10 THEN n = 10
+    joined = ""
+    FOR idx = 1 TO n
+        IF idx > 1 THEN joined = joined + " "
+        joined = joined + RTRIM$(Req.message)
+    NEXT idx
 
-        outStr = ""
-        FOR idx = 1 TO n
-            IF idx > 1 THEN outStr = outStr + " "
-            outStr = outStr + msg
-        NEXT idx
-
-        glue_EchoResponse.result  = outStr
-        glue_EchoResponse.repeats = n
-
-        gResp.statusCode = 200
-        RunRoute$ = WriteEchoResponse$
-    ELSE
-        gResp.statusCode = 405
-        RunRoute$ = "{" + CHR$(34) + "error" + CHR$(34) + ":" + CHR$(34) + "Method Not Allowed" + CHR$(34) + "}"
-    END IF
-END FUNCTION
-
-
+    Resp.result  = joined
+    Resp.repeats = n
+END SUB

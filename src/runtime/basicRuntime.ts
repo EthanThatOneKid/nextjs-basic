@@ -37,6 +37,7 @@ function killRuntime(routeName: string): void {
     call.reject(new QB64CrashError(routeName, null));
   }
   rt.pending.clear();
+  try { rt.proc.stdin?.write('{"_quit":true}\n'); } catch { /* already closed */ }
   try { rt.proc.kill(); } catch { /* already dead */ }
 }
 
@@ -127,3 +128,6 @@ export function shutdownAll(): void {
     killRuntime(routeName);
   }
 }
+
+// QB64 cannot see its stdin close, so make sure no route process outlives this one.
+process.once('exit', shutdownAll);
