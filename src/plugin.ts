@@ -35,7 +35,7 @@ function buildRoute(basFile: string, projectRoot: string, isVerbose: boolean): v
   if (parsed.methods.length === 0) {
     throw new Error(
       `[nextjs-basic] ${label} defines no handler. Add at least one of: ` +
-      'SUB OnGet, SUB OnPost, SUB OnPut, SUB OnDelete, SUB OnPatch'
+      'SUB OnGet, SUB OnPost, SUB OnPut, SUB OnDelete, SUB OnPatch, SUB OnHead, SUB OnOptions'
     );
   }
   writeGeneratedFiles(parsed);

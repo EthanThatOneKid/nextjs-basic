@@ -57,7 +57,7 @@ module.exports = withBasic({});
 4. `route.ts` is generated as a thin Next.js shim that calls the binary.
 5. The binary runs as a persistent process — one spawn, no cold starts.
 
-For everything a route can read and call (`Req`, `Resp`, `Fail`, `Respond`, `Query$`, `Header$`, `Param$`), see [docs/writing-routes.md](docs/writing-routes.md).
+For everything a route can read and call (`Req`, `Resp`, `Fail`, `Respond`, `Query$`, `Header$`, `Param$`, and the `OnGet` ... `OnOptions` handlers), see [docs/writing-routes.md](docs/writing-routes.md).
 
 ## Supported QB64 types in TYPE blocks
 

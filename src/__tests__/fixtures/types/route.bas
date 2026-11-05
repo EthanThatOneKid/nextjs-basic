@@ -49,3 +49,11 @@ END SUB
 SUB OnDelete
     Fail 418, "teapot says " + CHR$(34) + "no" + CHR$(34)
 END SUB
+
+SUB OnHead
+    CopyBack
+END SUB
+
+SUB OnOptions
+    Respond 204
+END SUB

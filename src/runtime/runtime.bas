@@ -4,7 +4,7 @@ $CONSOLE:ONLY
 '
 ' What a route file gets (see docs/writing-routes.md):
 '   TYPE Request / TYPE Response   optional; Req and Resp are the shared variables
-'   SUB OnGet, OnPost, OnPut, OnDelete, OnPatch   one per supported method
+'   SUB OnGet, OnPost, OnPut, OnDelete, OnPatch, OnHead, OnOptions   one per supported method
 '   Ctx                            method, path, raw JSON of body/query/headers/params
 '   Query$, Header$, Param$        read the query string, headers, dynamic segments
 '   Respond code                   set the HTTP status (default 200)

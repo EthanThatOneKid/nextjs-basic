@@ -49,8 +49,6 @@ function qb64TypeToTs(rawType: string, file: string, line: number, field: string
 // Parser
 // ---------------------------------------------------------------------------
 
-const HTTP_METHODS = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'];
-
 /**
  * Unique, filesystem-safe endpoint name. Files under app/api use their path below
  * it (users/[id] -> users___id_), so two [id] routes never share a binary.
@@ -86,10 +84,10 @@ export function parseBasFile(basFile: string): ParsedRoute {
       if (upper.startsWith('FUNCTION RUNROUTE')) {
         throw new ParseError(
           basFile, lineNo, 'RunRoute$',
-          'RunRoute$ was replaced by one SUB per method: SUB OnGet, SUB OnPost, SUB OnPut, SUB OnDelete, SUB OnPatch'
+          'RunRoute$ was replaced by one SUB per method: SUB OnGet, SUB OnPost, SUB OnPut, SUB OnDelete, SUB OnPatch, SUB OnHead, SUB OnOptions'
         );
       }
-      const handler = upper.match(/^SUB +ON(GET|POST|PUT|DELETE|PATCH)( |[(]|$)/);
+      const handler = upper.match(/^SUB +ON(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)( |[(]|$)/);
       if (handler && !methods.includes(handler[1])) methods.push(handler[1]);
     }
 
@@ -218,6 +216,17 @@ export function generateTypes(parsed: ParsedRoute): string {
 // Codegen — route.ts shim
 // ---------------------------------------------------------------------------
 
+/**
+ * The Allow header for an OPTIONS handler. Next.js sets it automatically only when
+ * it implements OPTIONS itself, so a route that defines OnOptions would lose it.
+ */
+function allowHeader(parsed: ParsedRoute): string {
+  const allowed = [...parsed.methods];
+  if (allowed.includes('GET') && !allowed.includes('HEAD')) allowed.push('HEAD');
+  if (!allowed.includes('OPTIONS')) allowed.push('OPTIONS');
+  return allowed.join(', ');
+}
+
 export function generateShim(parsed: ParsedRoute): string {
   const names = parsed.types.map(t => tsName(parsed.routeName, t.name));
   if (parsed.types.some(t => t.name === 'Request') && parsed.types.some(t => t.name === 'Response')) {
@@ -240,6 +249,7 @@ export function generateShim(parsed: ParsedRoute): string {
   lines.push('');
 
   for (const method of parsed.methods) {
+    const init = method === 'OPTIONS' ? `, headers: { Allow: ${JSON.stringify(allowHeader(parsed))} }` : '';
     lines.push(`export async function ${method}(req: NextRequest, ctx: { params?: unknown } = {}) {`);
     lines.push(`  const body = await req.json().catch(() => ({}));`);
     lines.push(`  const raw = await callBasic({`);
@@ -253,7 +263,11 @@ export function generateShim(parsed: ParsedRoute): string {
     lines.push(`  });`);
     lines.push(`  const result = JSON.parse(raw);`);
     lines.push(`  const data = JSON.parse(result.bodyJson ?? '{}');`);
-    lines.push(`  return NextResponse.json(data, { status: result.statusCode ?? 200 });`);
+    lines.push(`  const status = result.statusCode ?? 200;`);
+    lines.push(`  if (${JSON.stringify(method)} === 'HEAD' || status === 204 || status === 205 || status === 304) {`);
+    lines.push(`    return new NextResponse(null, { status${init} });`);
+    lines.push(`  }`);
+    lines.push(`  return NextResponse.json(data, { status${init} });`);
     lines.push(`}`);
     lines.push('');
   }
