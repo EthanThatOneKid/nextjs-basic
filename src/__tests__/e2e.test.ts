@@ -32,6 +32,13 @@ function findQb64(): string | null {
 const QB64 = findQb64();
 const describeE2E = QB64 ? describe : describe.skip;
 
+// CI sets REQUIRE_QB64 so a missing compiler fails the run instead of skipping the e2e tests
+if (process.env.REQUIRE_QB64 && !QB64) {
+  test('a QB64 compiler is available', () => {
+    throw new Error('REQUIRE_QB64 is set but no QB64 compiler was found (QB64_PATH, qb64pe, qb64)');
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------

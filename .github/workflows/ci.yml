@@ -6,10 +6,14 @@ on:
   pull_request:
     branches: [main]
 
+env:
+  QB64PE_VERSION: v4.7.0-GLFW
+
 jobs:
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -27,23 +31,61 @@ jobs:
       - name: Install dependencies
         run: npm install --legacy-peer-deps
 
-      # QB64-PE ships a bundled compiler on Windows, so the e2e tests can run there.
-      # Other platforms skip the e2e tests (qb64 not installed).
+      # The e2e tests compile real routes, so every platform needs QB64-PE.
+      # Windows ships a bundled compiler; Linux and macOS build it from source once
+      # and cache the result.
       - name: Install QB64-PE (Windows)
         if: runner.os == 'Windows'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release download v4.7.0-GLFW --repo QB64-Phoenix-Edition/QB64pe -p 'qb64pe_win-x64-*.7z' -D "$RUNNER_TEMP"
+          gh release download "$QB64PE_VERSION" --repo QB64-Phoenix-Edition/QB64pe -p 'qb64pe_win-x64-*.7z' -D "$RUNNER_TEMP"
           7z x "$RUNNER_TEMP"/qb64pe_win-x64-*.7z -o"$RUNNER_TEMP/qb64pe" -y > /dev/null
           echo "QB64_PATH=$(cygpath -w "$RUNNER_TEMP/qb64pe/qb64pe/qb64pe.exe")" >> "$GITHUB_ENV"
+
+      - name: Cache QB64-PE (Linux, macOS)
+        if: runner.os != 'Windows'
+        id: qb64-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/qb64pe
+          key: qb64pe-${{ runner.os }}-${{ runner.arch }}-${{ env.QB64PE_VERSION }}-1
+
+      - name: Build QB64-PE (Linux, macOS)
+        if: runner.os != 'Windows' && steps.qb64-cache.outputs.cache-hit != 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          case "$RUNNER_OS" in
+            Linux) asset='qb64pe_lnx-x64-*.tar.gz'; setup='./setup_lnx.sh' ;;
+            macOS) asset='qb64pe_osx-*.tar.gz'; setup='./setup_osx.command' ;;
+          esac
+          gh release download "$QB64PE_VERSION" --repo QB64-Phoenix-Edition/QB64pe -p "$asset" -D "$RUNNER_TEMP"
+          tar -xzf "$RUNNER_TEMP"/qb64pe_*.tar.gz -C "$HOME"
+          cd "$HOME/qb64pe"
+          # any argument stops the script from launching the IDE afterwards
+          "$setup" no-launch
+          # The first compile builds QB64's own support libraries. Do it now so the
+          # cache holds them and the tests do not pay for it.
+          printf '$CONSOLE:ONLY\nPRINT "ok"\nSYSTEM\n' > warm.bas
+          ./qb64pe -x warm.bas -o "$PWD/warm"
+          ./warm
+
+      - name: Point the tests at QB64-PE (Linux, macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: echo "QB64_PATH=$HOME/qb64pe/qb64pe" >> "$GITHUB_ENV"
 
       - name: Type-check
         run: npx tsc --noEmit
 
       - name: Run tests
         run: npm test
+        env:
+          # fail instead of silently skipping the e2e tests when no compiler is found
+          REQUIRE_QB64: '1'
 
   build:
     name: Build
