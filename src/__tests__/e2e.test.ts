@@ -362,6 +362,17 @@ describeE2E('field types round trip', () => {
     expect(r.body).toMatchObject({ anInt: 32767, aLong: -2147483648, aByte: 255 });
   });
 
+  test('HEAD fills Req from the query string like GET', async () => {
+    const r = await c.call({ method: 'HEAD', queryJson: JSON.stringify({ anInt: 5, note: 'head' }) });
+    expect(r.status).toBe(200);
+    expect(r.body).toMatchObject({ anInt: 5, note: 'head' });
+  });
+
+  test('OPTIONS runs OnOptions', async () => {
+    const r = await c.call({ method: 'OPTIONS' });
+    expect(r.status).toBe(204);
+  });
+
   test('Respond sets a custom status', async () => {
     const r = await c.post({ anInt: 1 }, 'PUT');
     expect(r.status).toBe(201);

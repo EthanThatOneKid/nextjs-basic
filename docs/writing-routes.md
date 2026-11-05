@@ -8,7 +8,7 @@ A route lives at `app/api/<path>/route.bas`. The folder path is the URL. You wri
 
 1. A `TYPE Request` (optional): the input fields.
 2. A `TYPE Response` (optional): the output fields.
-3. One `SUB` per HTTP method you support: `OnGet`, `OnPost`, `OnPut`, `OnDelete`, `OnPatch`.
+3. One `SUB` per HTTP method you support: `OnGet`, `OnPost`, `OnPut`, `OnDelete`, `OnPatch`, `OnHead`, `OnOptions`.
 
 ```basic
 TYPE Request
@@ -28,6 +28,21 @@ END SUB
 Before your SUB runs, the plugin fills `Req`. Your SUB sets fields on `Resp`. When it ends, `Resp` is sent as JSON with status 200. Nothing else is needed.
 
 The methods a route supports are exactly the `On...` SUBs it defines. A request for any other method gets a 405 from Next.js. A route with no handler at all fails the build.
+
+### HEAD and OPTIONS
+
+You usually do not need to write these.
+
+| Request | If you do not define the SUB |
+|---|---|
+| `HEAD` | Next.js runs your `OnGet` and drops the body |
+| `OPTIONS` | Next.js answers 204 with an `Allow` header listing your methods |
+
+Define `OnHead` when a HEAD should skip expensive work. It is filled from the query string like GET, and the body is always dropped.
+
+Define `OnOptions` to take over OPTIONS. The `Allow` header is still added for you. Nothing else is, so there are no CORS headers until response headers exist (see below).
+
+A response with status 204, 205 or 304 is sent without a body.
 
 The names are fixed. You always write `Request`, `Response`, `Req` and `Resp`, whatever the route is called.
 
@@ -141,10 +156,9 @@ The compiled binary goes to `bin/<name>` (`.exe` on Windows) at the project root
 
 ## Rough edges
 
-- `HEAD` and `OPTIONS` are not handled yet ([#3](https://github.com/EthanThatOneKid/nextjs-basic/issues/3)).
 - Only `app/api` is scanned. `src/app` is not.
 - Nested `TYPE` fields are not supported.
-- No way to set response headers or return a non-JSON body.
+- No way to set response headers (so no CORS) or return a non-JSON body. The only header the plugin sets is `Allow` on OPTIONS.
 - A `GET` always reads the query string. There is no way to send it a body.
 - One `Request` and one `Response` type per route, shared by all methods.
 - Everything above 4096 characters of body is cut silently.
@@ -152,6 +166,6 @@ The compiled binary goes to `bin/<name>` (`.exe` on Windows) at the project root
 ## Open design questions
 
 1. **Per-method types.** `GetRequest` / `PostRequest` when methods need different shapes.
-2. **Response headers.** Something like `Header "Cache-Control", "no-store"`.
+2. **Response headers.** Something like `SetHeader "Cache-Control", "no-store"`. This also unlocks CORS in `OnOptions`.
 3. **Typed client.** A generated `fetch` wrapper built on `HelloRoute`.
 4. **`proxy.bas`.** Whether other Next.js backend files (see the file conventions) deserve the same treatment.

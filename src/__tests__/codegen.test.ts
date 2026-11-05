@@ -72,8 +72,14 @@ END SUB
 
 SUB OnPatch
 END SUB
+
+SUB OnHead
+END SUB
+
+SUB OnOptions
+END SUB
 `);
-    expect(parseBasFile(file).methods).toEqual(['GET', 'POST', 'PUT', 'DELETE', 'PATCH']);
+    expect(parseBasFile(file).methods).toEqual(['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS']);
   });
 
   test('ignores method names in comments, strings and other SUBs', () => {
@@ -309,10 +315,61 @@ END SUB
     expect(shim).toContain('await ctx.params');
   });
 
+  test('HEAD and OPTIONS handlers get exports too', () => {
+    const shim = generateShim(parseBasFile(tmpBas(`
+SUB OnHead
+END SUB
+
+SUB OnOptions
+END SUB
+`)));
+    expect(shim).toContain('export async function HEAD');
+    expect(shim).toContain('export async function OPTIONS');
+  });
+
+  test('responses that cannot carry a body are sent without one', () => {
+    const shim = generateShim(parseBasFile(tmpBas(twoMethods)));
+    expect(shim).toContain("status === 204 || status === 205 || status === 304");
+    expect(shim).toContain('return new NextResponse(null, { status });');
+    // HEAD always drops the body, and only HEAD handlers say so
+    expect(shim).toContain('"GET" === \'HEAD\'');
+  });
+
+  test('an OPTIONS handler sets the Allow header Next.js would have set', () => {
+    const shim = generateShim(parseBasFile(tmpBas(`
+SUB OnGet
+END SUB
+
+SUB OnPost
+END SUB
+
+SUB OnOptions
+END SUB
+`)));
+    expect(shim).toContain('headers: { Allow: "GET, POST, OPTIONS, HEAD" }');
+  });
+
+  test('other handlers send no Allow header', () => {
+    const shim = generateShim(parseBasFile(tmpBas(`
+SUB OnGet
+END SUB
+`)));
+    expect(shim).not.toContain('Allow');
+  });
+
+  test('a HEAD handler always sends no body', () => {
+    const shim = generateShim(parseBasFile(tmpBas(`
+SUB OnHead
+END SUB
+`)));
+    expect(shim).toContain('"HEAD" === \'HEAD\'');
+  });
+
   test('returns the parsed body with the status the route chose', () => {
     const shim = generateShim(parseBasFile(tmpBas(twoMethods)));
     expect(shim).toContain('JSON.parse(result.bodyJson');
-    expect(shim).toContain('status: result.statusCode');
+    expect(shim).toContain('const status = result.statusCode ?? 200;');
+    expect(shim).toContain('return NextResponse.json(data, { status });');
   });
 });
 
@@ -483,6 +540,20 @@ TYPE Request
 END TYPE
 `)));
     expect(glue).toContain(`IF pv < ${lo} OR pv > ${hi} THEN Fail 400, "n is out of range"`);
+  });
+
+  test('the dispatcher routes HEAD and OPTIONS to OnHead and OnOptions', () => {
+    const glue = generateQB64Glue(parseBasFile(tmpBas(`
+SUB OnHead
+END SUB
+
+SUB OnOptions
+END SUB
+`)));
+    expect(glue).toContain('CASE "HEAD"');
+    expect(glue).toContain('OnHead');
+    expect(glue).toContain('CASE "OPTIONS"');
+    expect(glue).toContain('OnOptions');
   });
 
   test('GET and HEAD fill Req from the query string, other methods from the body', () => {
