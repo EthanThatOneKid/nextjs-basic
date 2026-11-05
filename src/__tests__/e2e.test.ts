@@ -55,7 +55,9 @@ const RUNTIME_BAS = path.join(__dirname, '..', 'runtime', 'runtime.bas');
  * into the scratch folder first so generated files never land in the source tree.
  */
 function compileTestBinary(basFile: string, scratchDir: string, name: string): string {
-  const routeDir = path.join(scratchDir, name);
+  // sources and binaries live in separate folders: on Linux and macOS a binary has no
+  // extension, so scratch/<name> would be both the route folder and the executable
+  const routeDir = path.join(scratchDir, 'src', name);
   fs.mkdirSync(routeDir, { recursive: true });
   const copy = path.join(routeDir, 'route.bas');
   fs.copyFileSync(basFile, copy);
@@ -74,7 +76,8 @@ function compileTestBinary(basFile: string, scratchDir: string, name: string): s
   const tmpBas = path.join(routeDir, 'combined.bas');
   fs.writeFileSync(tmpBas, combined, 'utf8');
 
-  const outBin = path.join(scratchDir, name + (os.platform() === 'win32' ? '.exe' : ''));
+  fs.mkdirSync(path.join(scratchDir, 'bin'), { recursive: true });
+  const outBin = path.join(scratchDir, 'bin', name + (os.platform() === 'win32' ? '.exe' : ''));
   const result = spawnSync(QB64!, ['-x', tmpBas, '-o', path.resolve(outBin)], {
     encoding: 'utf8',
     timeout: 120000,
