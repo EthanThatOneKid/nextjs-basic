@@ -84,6 +84,8 @@ interface Reply {
   status: number;
   /** Parsed response body */
   body: any;
+  /** Response headers the route set, as [name, value] pairs */
+  headers: Array<[string, string]>;
 }
 
 /** One long-lived route process, like the real runtime keeps. */
@@ -111,7 +113,7 @@ class Client {
       const onLine = (line: string) => {
         clearTimeout(timer);
         const wire = JSON.parse(line);
-        resolve({ id: wire._id, status: wire.statusCode, body: JSON.parse(wire.bodyJson) });
+        resolve({ id: wire._id, status: wire.statusCode, body: JSON.parse(wire.bodyJson), headers: wire.headers });
       };
       const early = this.buffered.shift();
       if (early !== undefined) onLine(early); else this.waiting.push(onLine);
@@ -388,6 +390,82 @@ describeE2E('field types round trip', () => {
   test('a long string is cut to the field size', async () => {
     const r = await c.post({ note: 'x'.repeat(100) });
     expect(r.body.note).toBe('x'.repeat(40));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// response headers
+// ---------------------------------------------------------------------------
+
+describeE2E('response headers (SetHeader, AllowCors)', () => {
+  let c: Client;
+  beforeEach(() => { c = new Client(bins.types); });
+  afterEach(() => c.kill());
+
+  const withNote = (note: string) => c.get({ note });
+
+  test('a route with no SetHeader sends an empty list', async () => {
+    const r = await withNote('plain');
+    expect(r.headers).toEqual([]);
+  });
+
+  test('SetHeader sends the header, and repeats keep every value in order', async () => {
+    const r = await withNote('headers');
+    expect(r.status).toBe(200);
+    expect(r.headers).toEqual([
+      ['Cache-Control', 'no-store'],
+      ['Set-Cookie', 'a=1'],
+      ['Set-Cookie', 'b=2'],
+    ]);
+  });
+
+  test('headers do not leak into the next request', async () => {
+    await withNote('headers');
+    const r = await withNote('plain');
+    expect(r.headers).toEqual([]);
+  });
+
+  test('values with quotes and backslashes arrive intact', async () => {
+    const r = await withNote('quote');
+    expect(r.headers).toEqual([['X-Quote', 'say "hi" \\ done']]);
+  });
+
+  test('AllowCors for one origin adds Vary and lists the route methods', async () => {
+    const r = await withNote('cors');
+    const h = Object.fromEntries(r.headers);
+    expect(h['Access-Control-Allow-Origin']).toBe('https://example.com');
+    expect(h['Vary']).toBe('Origin');
+    expect(h['Access-Control-Allow-Headers']).toBe('Content-Type, Authorization');
+    for (const m of ['GET', 'POST', 'PUT', 'DELETE', 'HEAD', 'OPTIONS']) {
+      expect(h['Access-Control-Allow-Methods']).toContain(m);
+    }
+  });
+
+  test('AllowCors "*" sends no Vary', async () => {
+    const r = await withNote('cors-star');
+    const h = Object.fromEntries(r.headers);
+    expect(h['Access-Control-Allow-Origin']).toBe('*');
+    expect(h['Vary']).toBeUndefined();
+  });
+
+  test('headers set before Fail are still sent', async () => {
+    const r = await withNote('failheaders');
+    expect(r.status).toBe(409);
+    expect(r.body).toEqual({ error: 'conflict' });
+    expect(r.headers).toEqual([['X-Before', 'yes']]);
+  });
+
+  test.each(['badname', 'emptyname', 'badvalue'])('%s is rejected with a 500 and nothing is sent', async (note) => {
+    const r = await withNote(note);
+    expect(r.status).toBe(500);
+    expect(r.body.error).toContain('Invalid response header');
+    expect(r.headers).toEqual([]);
+  });
+
+  test('a bad header does not stop the process serving', async () => {
+    await withNote('badvalue');
+    const ok = await withNote('plain');
+    expect(ok.status).toBe(200);
   });
 });
 

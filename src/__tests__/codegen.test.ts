@@ -330,7 +330,7 @@ END SUB
   test('responses that cannot carry a body are sent without one', () => {
     const shim = generateShim(parseBasFile(tmpBas(twoMethods)));
     expect(shim).toContain("status === 204 || status === 205 || status === 304");
-    expect(shim).toContain('return new NextResponse(null, { status });');
+    expect(shim).toContain('return new NextResponse(null, { status, headers });');
     // HEAD always drops the body, and only HEAD handlers say so
     expect(shim).toContain('"GET" === \'HEAD\'');
   });
@@ -346,7 +346,15 @@ END SUB
 SUB OnOptions
 END SUB
 `)));
-    expect(shim).toContain('headers: { Allow: "GET, POST, OPTIONS, HEAD" }');
+    expect(shim).toContain("if (!headers.has('Allow')) headers.set('Allow', \"GET, POST, OPTIONS, HEAD\");");
+  });
+
+  test('every handler forwards the headers the route set', () => {
+    const shim = generateShim(parseBasFile(tmpBas(twoMethods)));
+    expect(shim).toContain('const headers = new Headers();');
+    expect(shim).toContain('headers.append(name, value)');
+    expect(shim).toContain('new NextResponse(null, { status, headers })');
+    expect(shim).toContain('NextResponse.json(data, { status, headers })');
   });
 
   test('other handlers send no Allow header', () => {
@@ -369,7 +377,7 @@ END SUB
     const shim = generateShim(parseBasFile(tmpBas(twoMethods)));
     expect(shim).toContain('JSON.parse(result.bodyJson');
     expect(shim).toContain('const status = result.statusCode ?? 200;');
-    expect(shim).toContain('return NextResponse.json(data, { status });');
+    expect(shim).toContain('return NextResponse.json(data, { status, headers });');
   });
 });
 
@@ -540,6 +548,20 @@ TYPE Request
 END TYPE
 `)));
     expect(glue).toContain(`IF pv < ${lo} OR pv > ${hi} THEN Fail 400, "n is out of range"`);
+  });
+
+  test('AllowCors lists the methods the route supports', () => {
+    const glue = generateQB64Glue(parseBasFile(tmpBas(`
+SUB OnGet
+END SUB
+
+SUB OnPost
+END SUB
+`)));
+    expect(glue).toContain('SUB AllowCors (origin AS STRING)');
+    expect(glue).toContain('SetHeader "Access-Control-Allow-Origin", origin');
+    expect(glue).toContain('IF origin <> "*" THEN SetHeader "Vary", "Origin"');
+    expect(glue).toContain('SetHeader "Access-Control-Allow-Methods", "GET, POST, HEAD, OPTIONS"');
   });
 
   test('the dispatcher routes HEAD and OPTIONS to OnHead and OnOptions', () => {

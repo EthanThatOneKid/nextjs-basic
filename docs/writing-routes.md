@@ -40,7 +40,7 @@ You usually do not need to write these.
 
 Define `OnHead` when a HEAD should skip expensive work. It is filled from the query string like GET, and the body is always dropped.
 
-Define `OnOptions` to take over OPTIONS. The `Allow` header is still added for you. Nothing else is, so there are no CORS headers until response headers exist (see below).
+Define `OnOptions` to take over OPTIONS, for example to answer a CORS preflight. The `Allow` header is added for you unless you set your own.
 
 A response with status 204, 205 or 304 is sent without a body.
 
@@ -70,8 +70,32 @@ Set any of the fields of your `TYPE Response`. `Resp` is cleared before each req
 |---|---|
 | `Respond 201` | Sets the HTTP status. The default is 200 |
 | `Fail 404, "not found"` | Stops your SUB right there and sends `{"error": "not found"}` with that status |
+| `SetHeader "Cache-Control", "no-store"` | Adds a response header. Repeating a name adds another header, which is what `Set-Cookie` needs |
+| `AllowCors "*"` | Adds the CORS headers for this route (see below) |
 
-`Fail` works from anywhere, including a helper SUB you call. Nothing after it runs. If your SUB runs into a QB64 runtime error (for example dividing by zero), the request gets a 500 and the process keeps serving.
+Headers set before a `Fail` are still sent, so an error response can carry CORS headers. A header name must be a valid HTTP token, and a value cannot contain a line break. Otherwise the request fails with a 500 rather than letting a response be split.
+
+`Respond 302` with `SetHeader "Location", "/elsewhere"` is a redirect. `Fail` works from anywhere, including a helper SUB you call. Nothing after it runs. If your SUB runs into a QB64 runtime error (for example dividing by zero), the request gets a 500 and the process keeps serving.
+
+## CORS
+
+A page on another origin needs CORS headers on the real request, and a preflight `OPTIONS` request before it. Next.js answers that preflight itself with no CORS headers, so a route that wants CORS defines `OnOptions` too:
+
+```basic
+SUB OnGet
+    AllowCors "https://app.example.com"
+    Resp.status = "ok"
+END SUB
+
+SUB OnOptions
+    AllowCors "https://app.example.com"
+    Respond 204
+END SUB
+```
+
+`AllowCors origin` sets `Access-Control-Allow-Origin`, `Access-Control-Allow-Methods` (the methods this route defines, plus HEAD and OPTIONS), and `Access-Control-Allow-Headers: Content-Type, Authorization`. For a specific origin it also sets `Vary: Origin`. It is a plain helper over `SetHeader`: call it in every handler that browsers on other origins use.
+
+It does not cover credentials, a custom header list or `Access-Control-Max-Age`. `SetHeader` adds a header rather than replacing one, so for those write all the CORS headers yourself with `SetHeader` instead of calling `AllowCors`. If you want the same rules on every route, `headers()` in `next.config.js` is also fine.
 
 ## Reading more of the request
 
@@ -158,7 +182,9 @@ The compiled binary goes to `bin/<name>` (`.exe` on Windows) at the project root
 
 - Only `app/api` is scanned. `src/app` is not.
 - Nested `TYPE` fields are not supported.
-- No way to set response headers (so no CORS) or return a non-JSON body. The only header the plugin sets is `Allow` on OPTIONS.
+- No way to return a non-JSON body.
+- `SetHeader` cannot replace or remove a header; repeating a name adds another.
+- `AllowCors` takes one origin, not a list, and does not know about credentials.
 - A `GET` always reads the query string. There is no way to send it a body.
 - One `Request` and one `Response` type per route, shared by all methods.
 - Everything above 4096 characters of body is cut silently.
@@ -166,6 +192,5 @@ The compiled binary goes to `bin/<name>` (`.exe` on Windows) at the project root
 ## Open design questions
 
 1. **Per-method types.** `GetRequest` / `PostRequest` when methods need different shapes.
-2. **Response headers.** Something like `SetHeader "Cache-Control", "no-store"`. This also unlocks CORS in `OnOptions`.
-3. **Typed client.** A generated `fetch` wrapper built on `HelloRoute`.
-4. **`proxy.bas`.** Whether other Next.js backend files (see the file conventions) deserve the same treatment.
+2. **Typed client.** A generated `fetch` wrapper built on `HelloRoute`.
+3. **`proxy.bas`.** Whether other Next.js backend files (see the file conventions) deserve the same treatment.

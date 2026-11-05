@@ -249,7 +249,6 @@ export function generateShim(parsed: ParsedRoute): string {
   lines.push('');
 
   for (const method of parsed.methods) {
-    const init = method === 'OPTIONS' ? `, headers: { Allow: ${JSON.stringify(allowHeader(parsed))} }` : '';
     lines.push(`export async function ${method}(req: NextRequest, ctx: { params?: unknown } = {}) {`);
     lines.push(`  const body = await req.json().catch(() => ({}));`);
     lines.push(`  const raw = await callBasic({`);
@@ -263,11 +262,16 @@ export function generateShim(parsed: ParsedRoute): string {
     lines.push(`  });`);
     lines.push(`  const result = JSON.parse(raw);`);
     lines.push(`  const data = JSON.parse(result.bodyJson ?? '{}');`);
+    lines.push(`  const headers = new Headers();`);
+    lines.push(`  for (const [name, value] of (result.headers ?? []) as [string, string][]) headers.append(name, value);`);
+    if (method === 'OPTIONS') {
+      lines.push(`  if (!headers.has('Allow')) headers.set('Allow', ${JSON.stringify(allowHeader(parsed))});`);
+    }
     lines.push(`  const status = result.statusCode ?? 200;`);
     lines.push(`  if (${JSON.stringify(method)} === 'HEAD' || status === 204 || status === 205 || status === 304) {`);
-    lines.push(`    return new NextResponse(null, { status${init} });`);
+    lines.push(`    return new NextResponse(null, { status, headers });`);
     lines.push(`  }`);
-    lines.push(`  return NextResponse.json(data, { status${init} });`);
+    lines.push(`  return NextResponse.json(data, { status, headers });`);
     lines.push(`}`);
     lines.push('');
   }
@@ -463,6 +467,15 @@ export function generateQB64Glue(parsed: ParsedRoute): string {
   out.push(`        CASE ELSE`);
   out.push(`            Fail 405, "Method Not Allowed"`);
   out.push(`    END SELECT`);
+  out.push(`END SUB`);
+  out.push('');
+
+  out.push(`' CORS headers for this route: call it from each handler and from OnOptions`);
+  out.push(`SUB AllowCors (origin AS STRING)`);
+  out.push(`    SetHeader "Access-Control-Allow-Origin", origin`);
+  out.push(`    IF origin <> "*" THEN SetHeader "Vary", "Origin"`);
+  out.push(`    SetHeader "Access-Control-Allow-Methods", "${allowHeader(parsed)}"`);
+  out.push(`    SetHeader "Access-Control-Allow-Headers", "Content-Type, Authorization"`);
   out.push(`END SUB`);
   out.push('');
 

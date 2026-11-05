@@ -21,7 +21,32 @@ TYPE Response
     onlyWhenSeven AS INTEGER
 END TYPE
 
+SUB HeaderCases
+    SELECT CASE RTRIM$(Req.note)
+        CASE "headers"
+            SetHeader "Cache-Control", "no-store"
+            SetHeader "Set-Cookie", "a=1"
+            SetHeader "Set-Cookie", "b=2"
+        CASE "cors"
+            AllowCors "https://example.com"
+        CASE "cors-star"
+            AllowCors "*"
+        CASE "badname"
+            SetHeader "Bad Name", "x"
+        CASE "emptyname"
+            SetHeader "", "x"
+        CASE "badvalue"
+            SetHeader "X-Test", "line1" + CHR$(13) + CHR$(10) + "Evil: 1"
+        CASE "failheaders"
+            SetHeader "X-Before", "yes"
+            Fail 409, "conflict"
+        CASE "quote"
+            SetHeader "X-Quote", "say " + CHR$(34) + "hi" + CHR$(34) + " \ done"
+    END SELECT
+END SUB
+
 SUB CopyBack
+    HeaderCases
     Resp.anInt   = Req.anInt
     Resp.aLong   = Req.aLong
     Resp.aDouble = Req.aDouble
