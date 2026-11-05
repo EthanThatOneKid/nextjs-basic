@@ -10,6 +10,8 @@ import {
   generateQB64Glue,
   generateQB64GlueDecls,
   routeNameFor,
+  routePascal,
+  tsName,
 } from '../codegen';
 import { ParseError } from '../types';
 
@@ -32,16 +34,16 @@ function tmpBas(content: string): string {
 // ---------------------------------------------------------------------------
 
 describe('parseBasFile', () => {
-  test('parses a simple TYPE and GET function', () => {
+  test('parses a simple TYPE and GET handler', () => {
     const file = tmpBas(`
 TYPE HelloBody
     name AS STRING * 50
     age  AS INTEGER
 END TYPE
 
-FUNCTION RunRoute$ (methStr AS STRING)
-    IF methStr = "GET" THEN RunRoute$ = "{}"
-END FUNCTION
+SUB OnGet
+    ' handler
+END SUB
 `);
     const parsed = parseBasFile(file);
     expect(parsed.routeName).toBe('hello');
@@ -54,16 +56,55 @@ END FUNCTION
     ]);
   });
 
-  test('parses multiple HTTP methods', () => {
+  test('detects every handler SUB, in any case', () => {
     const file = tmpBas(`
-FUNCTION RunRoute$ (methStr AS STRING)
-    IF methStr = "GET" THEN RunRoute$ = "{}"
-    IF methStr = "POST" THEN RunRoute$ = "{}"
+SUB OnGet
+END SUB
+
+sub onpost ()
+end sub
+
+SUB OnPut
+END SUB
+
+SUB OnDelete
+END SUB
+
+SUB OnPatch
+END SUB
+`);
+    expect(parseBasFile(file).methods).toEqual(['GET', 'POST', 'PUT', 'DELETE', 'PATCH']);
+  });
+
+  test('ignores method names in comments, strings and other SUBs', () => {
+    const file = tmpBas(`
+' SUB OnPost would go here
+SUB Helper
+    PRINT "GET and POST"
+END SUB
+
+SUB OnGet
+END SUB
+`);
+    expect(parseBasFile(file).methods).toEqual(['GET']);
+  });
+
+  test('reports a route with no handlers as having no methods', () => {
+    const file = tmpBas(`
+TYPE Request
+    a AS INTEGER
+END TYPE
+`);
+    expect(parseBasFile(file).methods).toEqual([]);
+  });
+
+  test('explains how to migrate the old RunRoute$ function', () => {
+    const file = tmpBas(`
+FUNCTION RunRoute$ (meth AS STRING)
 END FUNCTION
 `);
-    const parsed = parseBasFile(file);
-    expect(parsed.methods).toContain('GET');
-    expect(parsed.methods).toContain('POST');
+    expect(() => parseBasFile(file)).toThrow(ParseError);
+    expect(() => parseBasFile(file)).toThrow('SUB OnGet');
   });
 
   test('maps all supported numeric types', () => {
@@ -239,83 +280,106 @@ END TYPE
 // ---------------------------------------------------------------------------
 
 describe('generateShim', () => {
-  test('emits GET and POST exports', () => {
-    const file = tmpBas(`
+  const twoMethods = `
 TYPE Body
     name AS STRING * 50
 END TYPE
 
-FUNCTION RunRoute$ (methStr AS STRING)
-    IF methStr = "GET" THEN RunRoute$ = "{}"
-    IF methStr = "POST" THEN RunRoute$ = "{}"
-END FUNCTION
-`);
-    const parsed = parseBasFile(file);
-    const shim = generateShim(parsed);
-    expect(shim).toContain("export async function GET");
-    expect(shim).toContain("export async function POST");
-    expect(shim).toContain("callBasic");
+SUB OnGet
+END SUB
+
+SUB OnPost
+END SUB
+`;
+
+  test('emits one export per handler', () => {
+    const shim = generateShim(parseBasFile(tmpBas(twoMethods)));
+    expect(shim).toContain('export async function GET');
+    expect(shim).toContain('export async function POST');
+    expect(shim).not.toContain('export async function PUT');
+    expect(shim).toContain('callBasic');
     expect(shim).toContain('endpoint: "hello"');
-    expect(shim).toContain("export type { Body }");
+    expect(shim).toContain('export type { Body }');
+  });
+
+  test('forwards query, headers and params', () => {
+    const shim = generateShim(parseBasFile(tmpBas(twoMethods)));
+    expect(shim).toContain('searchParams');
+    expect(shim).toContain('req.headers');
+    expect(shim).toContain('await ctx.params');
+  });
+
+  test('returns the parsed body with the status the route chose', () => {
+    const shim = generateShim(parseBasFile(tmpBas(twoMethods)));
+    expect(shim).toContain('JSON.parse(result.bodyJson');
+    expect(shim).toContain('status: result.statusCode');
   });
 });
 
 // ---------------------------------------------------------------------------
-// generateQB64Glue
+// TypeScript names for Request / Response
 // ---------------------------------------------------------------------------
 
-describe('generateQB64Glue', () => {
-  test('emits ParseXxx and WriteXxx SUBs', () => {
-    const file = tmpBas(`
-TYPE HelloBody
-    name AS STRING * 50
-    age  AS INTEGER
-END TYPE
-`);
-    const parsed = parseBasFile(file);
-    const glue = generateQB64Glue(parsed);
-
-    // QB64 forbids user TYPEs as parameters: Parse takes a JSON string, Write returns one
-    expect(glue).toContain('SUB ParseHelloBody (jsonIn AS STRING)');
-    expect(glue).toContain('FUNCTION WriteHelloBody$ ()');
-    expect(glue).toContain('JStr$');
-    expect(glue).toContain('JInt%');
-    // String field serialized with RTRIM$
-    expect(glue).toContain('RTRIM$');
-  });
-
-  test('uses LTRIM$(STR$()) for numeric fields in WriteXxx', () => {
-    const file = tmpBas(`
-TYPE NumBody
-    count AS LONG
-END TYPE
-`);
-    const parsed = parseBasFile(file);
-    const glue = generateQB64Glue(parsed);
-    expect(glue).toContain('LTRIM$(STR$');
-  });
-
-  test('emits empty glue (header only) for a route with no types', () => {
-    const file = tmpBas(`
-FUNCTION RunRoute$ (methStr AS STRING)
-END FUNCTION
-`);
-    const parsed = parseBasFile(file);
-    const glue = generateQB64Glue(parsed);
-    expect(glue).toContain('AUTO-GENERATED');
-    expect(glue).not.toContain('SUB Parse');
-  });
-});
-
-describe('generateQB64GlueDecls', () => {
-  test('emits one DIM SHARED per user TYPE', () => {
-    const file = tmpBas(`
-TYPE HelloBody
+describe('TypeScript names', () => {
+  const route = `
+TYPE Request
     name AS STRING * 50
 END TYPE
+
+TYPE Response
+    message AS STRING * 100
+END TYPE
+
+SUB OnGet
+END SUB
+`;
+
+  test('Request and Response get a per-route prefix so they never shadow the DOM types', () => {
+    const parsed = parseBasFile(tmpBas(route));
+    const ts = generateTypes(parsed);
+    expect(ts).toContain('export interface HelloRequest {');
+    expect(ts).toContain('export interface HelloResponse {');
+    expect(ts).not.toContain('export interface Request');
+    expect(ts).not.toContain('export interface Response');
+  });
+
+  test('exports a request/response pair', () => {
+    const ts = generateTypes(parseBasFile(tmpBas(route)));
+    expect(ts).toContain('export interface HelloRoute {');
+    expect(ts).toContain('request: HelloRequest;');
+    expect(ts).toContain('response: HelloResponse;');
+  });
+
+  test('the shim re-exports the renamed types and the pair', () => {
+    const shim = generateShim(parseBasFile(tmpBas(route)));
+    expect(shim).toContain('export type { HelloRequest, HelloResponse, HelloRoute }');
+  });
+
+  test('no pair when only one of the two types exists', () => {
+    const file = tmpBas(`
+TYPE Response
+    message AS STRING * 10
+END TYPE
+
+SUB OnGet
+END SUB
 `);
-    const decls = generateQB64GlueDecls(parseBasFile(file));
-    expect(decls).toContain('DIM SHARED glue_HelloBody AS HelloBody');
+    const ts = generateTypes(parseBasFile(file));
+    expect(ts).toContain('export interface HelloResponse {');
+    expect(ts).not.toContain('HelloRoute');
+  });
+
+  test('routePascal makes safe identifiers from dynamic route names', () => {
+    expect(routePascal('hello')).toBe('Hello');
+    expect(routePascal('users___id_')).toBe('UsersId');
+    expect(routePascal('docs______slug_')).toBe('DocsSlug');
+    expect(routePascal('2fa')).toBe('R2fa');
+    expect(routePascal('___')).toBe('Route');
+  });
+
+  test('other type names are left alone', () => {
+    expect(tsName('hello', 'Point')).toBe('Point');
+    expect(tsName('hello', 'Request')).toBe('HelloRequest');
   });
 });
 
@@ -338,16 +402,144 @@ describe('routeNameFor', () => {
   });
 });
 
-describe('generateShim request context', () => {
-  test('forwards query, headers and params', () => {
+// ---------------------------------------------------------------------------
+// generateQB64Glue / generateQB64GlueDecls
+// ---------------------------------------------------------------------------
+
+describe('generateQB64GlueDecls', () => {
+  test('declares Req and Resp only for the types that exist', () => {
+    const both = generateQB64GlueDecls(parseBasFile(tmpBas(`
+TYPE Request
+    a AS INTEGER
+END TYPE
+TYPE Response
+    b AS INTEGER
+END TYPE
+`)));
+    expect(both).toContain('DIM SHARED Req AS Request');
+    expect(both).toContain('DIM SHARED Resp AS Response');
+    expect(both).toContain('DIM SHARED RespBlank AS Response');
+
+    const none = generateQB64GlueDecls(parseBasFile(tmpBas(`
+SUB OnGet
+END SUB
+`)));
+    expect(none).not.toMatch(/^DIM SHARED/m);
+  });
+});
+
+describe('generateQB64Glue', () => {
+  const full = `
+TYPE Request
+    name  AS STRING * 50
+    count AS INTEGER
+    ratio AS DOUBLE
+END TYPE
+
+TYPE Response
+    message AS STRING * 100
+    total   AS LONG
+    share   AS SINGLE
+END TYPE
+
+SUB OnGet
+END SUB
+
+SUB OnPost
+END SUB
+`;
+
+  test('ParseRequest takes a JSON string, never a TYPE parameter', () => {
+    const glue = generateQB64Glue(parseBasFile(tmpBas(full)));
+    expect(glue).toContain('SUB ParseRequest (jsonIn AS STRING)');
+    expect(glue).toContain('Req.name = JStr$(jsonIn, "name")');
+  });
+
+  test('WriteResponse$ escapes strings and fixes number formatting', () => {
+    const glue = generateQB64Glue(parseBasFile(tmpBas(full)));
+    expect(glue).toContain('FUNCTION WriteResponse$ ()');
+    expect(glue).toContain('JEn$(TrimF$(Resp.message))');
+    expect(glue).toContain('LTRIM$(STR$(Resp.total))');
+    expect(glue).toContain('NumS$(Resp.share)');
+  });
+
+  test('integer fields are range checked, floats are not', () => {
+    const glue = generateQB64Glue(parseBasFile(tmpBas(full)));
+    expect(glue).toContain('IF pv < -32768 OR pv > 32767 THEN Fail 400, "count is out of range"');
+    expect(glue).toContain('Req.ratio = VAL(JVal$(jsonIn, "ratio"))');
+    expect(glue).not.toContain('ratio is out of range');
+  });
+
+  test.each([
+    ['LONG', '-2147483648', '2147483647'],
+    ['_BYTE', '-128', '127'],
+    ['_UNSIGNED INTEGER', '0', '65535'],
+    ['_UNSIGNED LONG', '0', '4294967295'],
+    ['_UNSIGNED _BYTE', '0', '255'],
+  ])('%s uses its real range', (qbType, lo, hi) => {
+    const glue = generateQB64Glue(parseBasFile(tmpBas(`
+TYPE Request
+    n AS ${qbType}
+END TYPE
+`)));
+    expect(glue).toContain(`IF pv < ${lo} OR pv > ${hi} THEN Fail 400, "n is out of range"`);
+  });
+
+  test('GET and HEAD fill Req from the query string, other methods from the body', () => {
+    const glue = generateQB64Glue(parseBasFile(tmpBas(full)));
+    expect(glue).toContain('IF m = "GET" OR m = "HEAD" THEN');
+    expect(glue).toContain('ParseRequest RTRIM$(Ctx.queryJson)');
+    expect(glue).toContain('ParseRequest RTRIM$(Ctx.bodyJson)');
+  });
+
+  test('Resp is reset at the start of every request', () => {
+    const glue = generateQB64Glue(parseBasFile(tmpBas(full)));
+    expect(glue).toContain('Resp = RespBlank');
+  });
+
+  test('the dispatcher has a case per handler and a 405 for the rest', () => {
+    const glue = generateQB64Glue(parseBasFile(tmpBas(full)));
+    expect(glue).toContain('CASE "GET"');
+    expect(glue).toContain('OnGet');
+    expect(glue).toContain('CASE "POST"');
+    expect(glue).toContain('OnPost');
+    expect(glue).not.toContain('CASE "PUT"');
+    expect(glue).toContain('Fail 405, "Method Not Allowed"');
+  });
+
+  test('a route with no types still gets a dispatcher and an empty body', () => {
+    const glue = generateQB64Glue(parseBasFile(tmpBas(`
+SUB OnGet
+END SUB
+`)));
+    expect(glue).toContain('AUTO-GENERATED');
+    expect(glue).toContain('SUB GlueDispatch (m AS STRING)');
+    expect(glue).toContain('GlueFinish$ = "{}"');
+    expect(glue).not.toContain('SUB ParseRequest');
+    expect(glue).not.toContain('Resp = RespBlank');
+  });
+
+  test('nested types are rejected with a clear error', () => {
     const file = tmpBas(`
-FUNCTION RunRoute$ (methStr AS STRING)
-    IF methStr = "GET" THEN RunRoute$ = "{}"
-END FUNCTION
+TYPE Point
+    x AS INTEGER
+END TYPE
+
+TYPE Request
+    where AS Point
+END TYPE
 `);
-    const shim = generateShim(parseBasFile(file));
-    expect(shim).toContain('searchParams');
-    expect(shim).toContain('req.headers');
-    expect(shim).toContain('await ctx.params');
+    const parsed = parseBasFile(file);
+    expect(() => generateQB64Glue(parsed)).toThrow(ParseError);
+    expect(() => generateQB64Glue(parsed)).toThrow('nested type "Point"');
+  });
+
+  test('types other than Request and Response produce no JSON code', () => {
+    const glue = generateQB64Glue(parseBasFile(tmpBas(`
+TYPE Helper
+    x AS INTEGER
+END TYPE
+`)));
+    expect(glue).not.toContain('Helper');
   });
 });

@@ -7,33 +7,25 @@ Write Next.js API routes in QB64 BASIC.
 ```basic
 ' app/api/hello/route.bas
 
-TYPE HelloBody
+TYPE Request
     name AS STRING * 50
 END TYPE
 
-TYPE HelloResult
-    message AS STRING * 100
+TYPE Response
+    message  AS STRING * 100
+    language AS STRING * 20
 END TYPE
 
-FUNCTION RunRoute$ (meth AS STRING)
-    IF meth = "GET" THEN
-        ParseHelloBody RTRIM$(gReq.bodyJson)
-        IF RTRIM$(glue_HelloBody.name) = "" THEN glue_HelloBody.name = "World"
+SUB OnGet
+    IF RTRIM$(Req.name) = "" THEN Req.name = "World"
 
-        glue_HelloResult.message  = "Hello, " + RTRIM$(glue_HelloBody.name) + "! Greetings from QB64 BASIC."
-        glue_HelloResult.language = "QB64 BASIC"
-
-        gResp.statusCode = 200
-        RunRoute$ = WriteHelloResult$
-    ELSE
-        gResp.statusCode = 405
-        RunRoute$ = "{" + CHR$(34) + "error" + CHR$(34) + ":" + CHR$(34) + "Method Not Allowed" + CHR$(34) + "}"
-    END IF
-END FUNCTION
+    Resp.message  = "Hello, " + RTRIM$(Req.name) + "! Greetings from QB64 BASIC."
+    Resp.language = "QB64 BASIC"
+END SUB
 ```
 
-TypeScript types are generated automatically from your `TYPE` blocks. No
-boilerplate, no manual wiring.
+`GET /api/hello?name=Ada` returns the message as JSON. TypeScript types are
+generated from your `TYPE` blocks. No boilerplate, no manual wiring.
 
 ---
 
@@ -60,12 +52,12 @@ module.exports = withBasic({});
 ## How it works
 
 1. Any `app/api/**/route.bas` is detected at build time.
-2. The plugin runs the QB64 compiler: `runtime.bas` + `route.bas` + generated glue → native binary in `bin/` (headless, `-x`). Binaries that are newer than their sources are not rebuilt..
+2. The plugin runs the QB64 compiler: `runtime.bas` + `route.bas` + generated glue → native binary in `bin/` (headless, `-x`). Binaries that are newer than their sources are not rebuilt.
 3. `route.types.ts` is generated from your `TYPE` blocks.
 4. `route.ts` is generated as a thin Next.js shim that calls the binary.
 5. The binary runs as a persistent process — one spawn, no cold starts.
 
-For everything a route can read and call, see [docs/writing-routes.md](docs/writing-routes.md).
+For everything a route can read and call (`Req`, `Resp`, `Fail`, `Respond`, `Query$`, `Header$`, `Param$`), see [docs/writing-routes.md](docs/writing-routes.md).
 
 ## Supported QB64 types in TYPE blocks
 

@@ -24,30 +24,21 @@ types are generated from your BASIC `TYPE` blocks. You never touch a `route.ts`.
 ```basic
 ' app/api/hello/route.bas
 
-TYPE HelloBody
+TYPE Request
     name AS STRING * 50
 END TYPE
 
-TYPE HelloResult
+TYPE Response
     message  AS STRING * 100
     language AS STRING * 20
 END TYPE
 
-FUNCTION RunRoute$ (meth AS STRING)
-    IF meth = "GET" THEN
-        ParseHelloBody RTRIM$(gReq.bodyJson)
-        IF RTRIM$(glue_HelloBody.name) = "" THEN glue_HelloBody.name = "World"
+SUB OnGet
+    IF RTRIM$(Req.name) = "" THEN Req.name = "World"
 
-        glue_HelloResult.message  = "Hello, " + RTRIM$(glue_HelloBody.name) + "! Greetings from QB64 BASIC."
-        glue_HelloResult.language = "QB64 BASIC"
-
-        gResp.statusCode = 200
-        RunRoute$ = WriteHelloResult$
-    ELSE
-        gResp.statusCode = 405
-        RunRoute$ = "{" + CHR$(34) + "error" + CHR$(34) + ":" + CHR$(34) + "Method Not Allowed" + CHR$(34) + "}"
-    END IF
-END FUNCTION
+    Resp.message  = "Hello, " + RTRIM$(Req.name) + "! Greetings from QB64 BASIC."
+    Resp.language = "QB64 BASIC"
+END SUB
 ```
 
 That's the whole file. The plugin takes it from there.
@@ -83,10 +74,11 @@ At request time:
 Next.js → route.ts shim → Node.js child process → QB64 binary (STDIO) → response
 ```
 
-The QB64 binary handles the JSON parsing, calls your `RunRoute$` function, and
-writes the JSON response back. The generated `ParseHelloBody` and
-`WriteHelloResult` functions are QB64 SUBs built from your TYPE definitions, so
-your handler code just works with typed variables.
+The QB64 binary fills `Req` from the query string or JSON body, calls the
+`OnGet` / `OnPost` SUB that matches the method, and writes `Resp` back as JSON.
+The code that moves data between JSON and your `TYPE`s is generated from your
+type definitions, so your handler just reads and writes fields. `Fail 404,
+"not found"` stops the handler and sends an error.
 
 ---
 

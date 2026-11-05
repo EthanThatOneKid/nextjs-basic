@@ -32,6 +32,12 @@ function buildRoute(basFile: string, projectRoot: string, isVerbose: boolean): v
   if (isVerbose) console.log(`[nextjs-basic] building ${label}`);
 
   const parsed = parseBasFile(basFile);
+  if (parsed.methods.length === 0) {
+    throw new Error(
+      `[nextjs-basic] ${label} defines no handler. Add at least one of: ` +
+      'SUB OnGet, SUB OnPost, SUB OnPut, SUB OnDelete, SUB OnPatch'
+    );
+  }
   writeGeneratedFiles(parsed);
 
   const binDir = path.join(projectRoot, 'bin');
@@ -43,7 +49,8 @@ function buildRoute(basFile: string, projectRoot: string, isVerbose: boolean): v
   const runtimeBas = path.join(__dirname, '..', 'src', 'runtime', 'runtime.bas');
   if (fs.existsSync(outBin)) {
     const binTime = fs.statSync(outBin).mtimeMs;
-    const inputs = [basFile, runtimeBas];
+    // The plugin's own code decides the generated glue, so upgrading it rebuilds too
+    const inputs = [basFile, runtimeBas, path.join(__dirname, 'codegen.js'), path.join(__dirname, 'compiler.js')];
     if (inputs.every(f => !fs.existsSync(f) || fs.statSync(f).mtimeMs <= binTime)) {
       if (isVerbose) console.log(`[nextjs-basic] up to date ${label}`);
       return;
