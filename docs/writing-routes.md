@@ -49,7 +49,19 @@ These are defined by the framework (`runtime.bas`) and are in scope in your file
 
 Fixed-length strings are space-padded, so always use `RTRIM$(...)` when you read them.
 
-Query strings are not passed. The shim reads the JSON body (`{}` when there is none) and passes only `path`, so a GET with `?name=x` does not reach your code.
+The request context has three more raw JSON fields, `gReq.queryJson`, `gReq.headersJson` and `gReq.paramsJson`. Use the helpers below instead of parsing them.
+
+### Query string, headers and dynamic params
+
+| Helper | Reads | Example |
+|---|---|---|
+| `Query$("name")` | Query string (`?name=Ada`) | `Ada` |
+| `Header$("user-agent")` | Request header, case-insensitive name | `Mozilla/5.0 ...` |
+| `Param$("id")` | Dynamic segment (`app/api/users/[id]/route.bas`) | `42` |
+
+Each returns an empty string when the value is missing. Values are always strings. A repeated query key keeps the last value. Catch-all segments (`[...slug]`) arrive as the shim passes them. Limits: query 2048, headers 4096, params 1024 characters, and anything longer is cut.
+
+A route's endpoint and binary name come from its folder path below `app/api`, with unsafe characters replaced by `_`. For example `users/[id]` becomes `users___id_`, and two `[id]` routes in different folders get different names.
 
 ### `gResp` (the response)
 
@@ -149,7 +161,6 @@ Things I know are weak today:
 - `Write*$` does not escape quotes or backslashes in string fields, so a response string containing `"` produces invalid JSON. (`Parse*` input is unescaped correctly.)
 - Nested `TYPE` fields are accepted by the parser, but the generated glue passes a user type as a parameter, which QB64 rejects. Treat nested types as unsupported.
 - `_INTEGER64` fields are read through `VAL`, which loses precision above 2^53.
-- The generated shim does not pass query strings or headers.
 - No way to return a non-JSON body or set headers.
 - Methods are guessed from string literals.
 - The 4096 body limit is silent: longer input is truncated.
@@ -164,6 +175,6 @@ For you to decide:
 3. **Request access.** `gReq` plus `ParseFoo` plus `glue_Foo` is three concepts. Alternatives: pass the parsed body into the route as a typed variable, or generate `Request_Foo` / `Response_Bar` by naming convention.
 4. **Response shape.** Today you set `glue_*`, call `Write*$`, and set status separately. Could be one call, such as `Respond 200, WriteFoo$`.
 5. **Errors.** A standard way to fail, for example `Fail 404, "not found"`, instead of hand-building an error JSON string.
-6. **Query string and headers.** Expose them on `gReq`, and decide how a `GET` with params maps onto a body type.
+6. **Query string and headers.** `Query$`, `Header$` and `Param$` now exist. Decide whether a `GET` with params should instead fill a typed struct.
 7. **Name collisions.** `glue_*`, `g*` and the helper names are global. Decide on a prefix rule and a reserved-name list.
 8. **Typed client.** Whether the generated TypeScript should export the request and response types as a pair so callers get typed `fetch`.

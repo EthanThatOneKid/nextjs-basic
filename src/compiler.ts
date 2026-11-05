@@ -5,6 +5,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { execSync } from 'child_process';
 import { CompilerNotFoundError, CompileError } from './types';
+import { routeNameFor } from './codegen';
 
 // Path to the framework runtime.bas bundled with the package
 const RUNTIME_BAS = path.join(__dirname, '..', 'src', 'runtime', 'runtime.bas');
@@ -29,7 +30,7 @@ function findQb64(): string {
 
 export function compileRoute(basFile: string, outDir: string): string {
   const qb64 = findQb64();
-  const routeName = path.basename(path.dirname(basFile));
+  const routeName = routeNameFor(basFile);
 
   // Read framework runtime, generated glue, and user route
   const runtimeSrc = fs.readFileSync(RUNTIME_BAS, 'utf8');

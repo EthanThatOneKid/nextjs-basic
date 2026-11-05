@@ -16,6 +16,7 @@ FUNCTION RunRoute$ (meth AS STRING)
     IF meth = "GET" THEN
         ParseHelloBody RTRIM$(gReq.bodyJson)
 
+        IF RTRIM$(glue_HelloBody.name) = "" THEN glue_HelloBody.name = Query$("name")
         IF RTRIM$(glue_HelloBody.name) = "" THEN glue_HelloBody.name = "World"
 
         glue_HelloResult.message  = "Hello, " + RTRIM$(glue_HelloBody.name) + "! Greetings from QB64 BASIC."

@@ -8,7 +8,7 @@ bin-pe/
 combined.bas
 route.glue.bas
 route.glue_decls.bas
-example/app/api/*/route.ts
-example/app/api/*/route.types.ts
+example/app/api/**/route.ts
+example/app/api/**/route.types.ts
 smoke.js
 dev.log

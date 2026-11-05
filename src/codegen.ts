@@ -51,6 +51,17 @@ function qb64TypeToTs(rawType: string, file: string, line: number, field: string
 
 const HTTP_METHODS = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'];
 
+/**
+ * Unique, filesystem-safe endpoint name. Files under app/api use their path below
+ * it (users/[id] -> users___id_), so two [id] routes never share a binary.
+ */
+export function routeNameFor(basFile: string): string {
+  const parts = path.dirname(path.resolve(basFile)).split(path.sep);
+  const idx = parts.lastIndexOf('api');
+  const rel = idx > 0 && parts[idx - 1] === 'app' ? parts.slice(idx + 1) : [parts[parts.length - 1]];
+  return rel.join('__').replace(/[^A-Za-z0-9_-]/g, '_') || 'index';
+}
+
 export function parseBasFile(basFile: string): ParsedRoute {
   const src = fs.readFileSync(basFile, 'utf8');
   const lines = src.split(/\r?\n/);
@@ -130,7 +141,7 @@ export function parseBasFile(basFile: string): ParsedRoute {
   }
 
   // Derive route name from directory
-  const routeName = path.basename(path.dirname(basFile));
+  const routeName = routeNameFor(basFile);
 
   return { basFile, routeName, methods, types };
 }
@@ -192,13 +203,16 @@ export function generateShim(parsed: ParsedRoute): string {
   lines.push('');
 
   for (const method of parsed.methods) {
-    lines.push(`export async function ${method}(req: NextRequest) {`);
+    lines.push(`export async function ${method}(req: NextRequest, ctx: { params?: unknown } = {}) {`);
     lines.push(`  const body = await req.json().catch(() => ({}));`);
     lines.push(`  const raw = await callBasic({`);
     lines.push(`    endpoint: ${JSON.stringify(parsed.routeName)},`);
     lines.push(`    method: ${JSON.stringify(method)},`);
     lines.push(`    path: req.nextUrl.pathname,`);
     lines.push(`    bodyJson: JSON.stringify(body),`);
+    lines.push(`    queryJson: JSON.stringify(Object.fromEntries(req.nextUrl.searchParams)),`);
+    lines.push(`    headersJson: JSON.stringify(Object.fromEntries(req.headers)),`);
+    lines.push(`    paramsJson: JSON.stringify(await ctx.params ?? {}),`);
     lines.push(`  });`);
     lines.push(`  const result = JSON.parse(raw);`);
     lines.push(`  const data = JSON.parse(result.bodyJson ?? '{}');`);
