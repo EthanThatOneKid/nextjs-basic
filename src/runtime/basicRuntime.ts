@@ -14,13 +14,18 @@ interface PendingCall {
 }
 
 interface RuntimeProcess {
+  routeName: string;
   proc: ChildProcess;
   rl: readline.Interface;
   pending: Map<string, PendingCall>;
+  /** Told us to stop sending it work; it quits once its queued requests are answered. */
+  retiring: boolean;
 }
 
-// One process per route name
+// The process that takes new requests for each route name
 const procs = new Map<string, RuntimeProcess>();
+// Every live process, including retiring ones, so shutdown can reach them all
+const all = new Set<RuntimeProcess>();
 let idCounter = 0;
 
 function getBinPath(routeName: string): string {
@@ -28,17 +33,34 @@ function getBinPath(routeName: string): string {
   return path.join(process.cwd(), 'bin', routeName + ext);
 }
 
-function killRuntime(routeName: string): void {
-  const rt = procs.get(routeName);
-  if (!rt) return;
-  procs.delete(routeName);
-  for (const [, call] of rt.pending) {
-    clearTimeout(call.timer);
-    call.reject(new QB64CrashError(routeName, null));
-  }
-  rt.pending.clear();
+function stopProcess(rt: RuntimeProcess): void {
   try { rt.proc.stdin?.write('{"_quit":true}\n'); } catch { /* already closed */ }
   try { rt.proc.kill(); } catch { /* already dead */ }
+}
+
+function failPending(rt: RuntimeProcess, code: number | null): void {
+  for (const [, call] of rt.pending) {
+    clearTimeout(call.timer);
+    call.reject(new QB64CrashError(rt.routeName, code));
+  }
+  rt.pending.clear();
+}
+
+function killRuntime(routeName: string, rt: RuntimeProcess): void {
+  if (procs.get(routeName) === rt) procs.delete(routeName);
+  failPending(rt, null);
+  stopProcess(rt);
+}
+
+/**
+ * A QB64 process leaks a little stack every time a handler ends early with Fail, so
+ * the runtime asks to be replaced after a few hundred failures. New requests go to a
+ * fresh process at once; this one answers what is already queued, then quits.
+ */
+function retire(routeName: string, rt: RuntimeProcess): void {
+  rt.retiring = true;
+  if (procs.get(routeName) === rt) procs.delete(routeName);
+  if (rt.pending.size === 0) stopProcess(rt);
 }
 
 function getRuntime(routeName: string): RuntimeProcess {
@@ -54,8 +76,8 @@ function getRuntime(routeName: string): RuntimeProcess {
     throw new Error(`[nextjs-basic] Failed to open STDIO streams for ${routeName}`);
   }
 
-  const pending = new Map<string, PendingCall>();
   const rl = readline.createInterface({ input: proc.stdout });
+  const rt: RuntimeProcess = { routeName, proc, rl, pending: new Map<string, PendingCall>(), retiring: false };
 
   rl.on('line', (line) => {
     let parsed: Record<string, unknown>;
@@ -65,27 +87,24 @@ function getRuntime(routeName: string): RuntimeProcess {
       return;
     }
     const id = String(parsed['_id']);
-    const call = pending.get(id);
+    const call = rt.pending.get(id);
     if (!call) return;
-    pending.delete(id);
+    rt.pending.delete(id);
     clearTimeout(call.timer);
     call.resolve(line);
+
+    if (parsed['recycle'] === true) retire(routeName, rt);
+    else if (rt.retiring && rt.pending.size === 0) stopProcess(rt);
   });
 
   proc.on('exit', (code) => {
-    const rt = procs.get(routeName);
-    if (rt && rt.proc === proc) {
-      procs.delete(routeName);
-      for (const [, call] of rt.pending) {
-        clearTimeout(call.timer);
-        call.reject(new QB64CrashError(routeName, code));
-      }
-      rt.pending.clear();
-    }
+    all.delete(rt);
+    if (procs.get(routeName) === rt) procs.delete(routeName);
+    failPending(rt, code);
   });
 
-  const rt: RuntimeProcess = { proc, rl, pending };
   procs.set(routeName, rt);
+  all.add(rt);
   return rt;
 }
 
@@ -106,7 +125,7 @@ export function callBasic(payload: BasicPayload): Promise<string> {
 
     const timer = setTimeout(() => {
       rt.pending.delete(id);
-      killRuntime(endpoint);
+      killRuntime(endpoint, rt);
       reject(new QB64TimeoutError(endpoint));
     }, TIMEOUT_MS);
 
@@ -124,8 +143,10 @@ export function callBasic(payload: BasicPayload): Promise<string> {
 }
 
 export function shutdownAll(): void {
-  for (const [routeName] of procs) {
-    killRuntime(routeName);
+  for (const rt of [...all]) {
+    procs.clear();
+    failPending(rt, null);
+    stopProcess(rt);
   }
 }
 

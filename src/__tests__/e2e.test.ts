@@ -12,6 +12,7 @@ import * as path from 'path';
 import { execSync, spawn, spawnSync, ChildProcess } from 'child_process';
 import * as readline from 'readline';
 import { parseBasFile, writeGeneratedFiles } from '../codegen';
+import { callBasic, shutdownAll } from '../runtime/basicRuntime';
 
 // ---------------------------------------------------------------------------
 // QB64 availability check
@@ -107,6 +108,8 @@ interface Reply {
   body: any;
   /** Response headers the route set, as [name, value] pairs */
   headers: Array<[string, string]>;
+  /** Set when the process asks to be replaced (after many failures) */
+  recycle?: boolean;
 }
 
 /** One long-lived route process, like the real runtime keeps. */
@@ -142,7 +145,7 @@ class Client {
       const onLine = (line: string) => {
         clearTimeout(timer);
         const wire = JSON.parse(line);
-        resolve({ id: wire._id, status: wire.statusCode, body: JSON.parse(wire.bodyJson), headers: wire.headers });
+        resolve({ id: wire._id, status: wire.statusCode, body: JSON.parse(wire.bodyJson), headers: wire.headers, recycle: wire.recycle });
       };
       const early = this.buffered.shift();
       if (early !== undefined) onLine(early); else this.waiting.push(onLine);
@@ -499,6 +502,57 @@ describeE2E('response headers (SetHeader, AllowCors)', () => {
     const ok = await withNote('plain');
     expect(ok.status).toBe(200);
   });
+});
+
+// ---------------------------------------------------------------------------
+// many failures: Fail leaks a little QB64 stack, so the process asks to be replaced
+// ---------------------------------------------------------------------------
+
+describeE2E('failure budget (recycle)', () => {
+  test('the 500th failed response asks for a replacement, earlier ones do not', async () => {
+    const c = new Client(bins.types);
+    try {
+      for (let i = 1; i < 500; i++) {
+        const r = await c.post({}, 'DELETE');
+        expect(r.status).toBe(418);
+        expect(r.recycle).toBeUndefined();
+      }
+      const last = await c.post({}, 'DELETE');
+      expect(last.recycle).toBe(true);
+      // successful responses never ask on their own
+      const fresh = new Client(bins.types);
+      expect((await fresh.post({ anInt: 1 })).recycle).toBeUndefined();
+      fresh.kill();
+    } finally {
+      c.kill();
+    }
+  }, 60000);
+
+  test('the Node runtime survives far more failures than one process can', async () => {
+    // one process dies at about 1,500 failures; this sends 1,700 through callBasic
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nb-recycle-'));
+    const binDir = path.join(dir, 'bin');
+    fs.mkdirSync(binDir);
+    const ext = os.platform() === 'win32' ? '.exe' : '';
+    fs.copyFileSync(bins.types, path.join(binDir, 'types' + ext));
+    const cwd = process.cwd();
+    process.chdir(dir);
+    try {
+      for (let i = 0; i < 1700; i++) {
+        const raw = await callBasic({ endpoint: 'types', method: 'DELETE', path: '/t', bodyJson: '{}' });
+        expect(JSON.parse(raw).statusCode).toBe(418);
+      }
+      const ok = JSON.parse(await callBasic({
+        endpoint: 'types', method: 'POST', path: '/t', bodyJson: JSON.stringify({ anInt: 9 }),
+      }));
+      expect(ok.statusCode).toBe(200);
+      expect(JSON.parse(ok.bodyJson).anInt).toBe(9);
+    } finally {
+      shutdownAll();
+      process.chdir(cwd);
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+  }, 120000);
 });
 
 // ---------------------------------------------------------------------------

@@ -44,6 +44,14 @@ jobs:
           7z x "$RUNNER_TEMP"/qb64pe_win-x64-*.7z -o"$RUNNER_TEMP/qb64pe" -y > /dev/null
           echo "QB64_PATH=$(cygpath -w "$RUNNER_TEMP/qb64pe/qb64pe/qb64pe.exe")" >> "$GITHUB_ENV"
 
+      # The compiler links against these, so they are needed on every run. A cache hit
+      # restores the compiler but not the system packages it was built against.
+      - name: Install QB64-PE system libraries (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential x11-utils mesa-common-dev libglu1-mesa-dev libasound2-dev libpng-dev libcurl4-openssl-dev libx11-dev libxcursor-dev libxrandr-dev libxinerama-dev libxi-dev
+
       - name: Cache QB64-PE (Linux, macOS)
         if: runner.os != 'Windows'
         id: qb64-cache
