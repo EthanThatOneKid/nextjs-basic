@@ -17,11 +17,15 @@ Use any platform that runs a Docker container or a persistent process:
 
 The `Dockerfile` in `example/` handles everything:
 
-- Installs QB64-PE (headless Linux build)
-- Compiles your `.bas` routes to native binaries at build time
-- Runs `next build` + `next start`
+- Builds QB64-PE from its release source (a few minutes, once per image build)
+- Compiles your `.bas` routes to native binaries during `next build`
+- Runs `next start`, on `$PORT` or 3000
 
-Your binaries land in `bin/` and are copied into the runtime image.
+Build it from the repository root: `docker build -f example/Dockerfile -t nextjs-basic-example .`
+
+CI builds this image, starts it, and calls every example route on each push, so the image itself is tested. The platform steps below (Railway, Fly.io, Render) only point those platforms at the same image, and I have not deployed to any of them.
+
+In your own project the plugin comes from `npm install github:EthanThatOneKid/nextjs-basic`, so you can drop the plugin install and the copy of the plugin source from the Dockerfile.
 
 ---
 
@@ -59,10 +63,10 @@ Railway provides a public HTTPS URL automatically.
 ## Fly.io
 
 1. Install the [Fly CLI](https://fly.io/docs/hands-on/install-flyctl/).
-2. From the `example/` directory:
+2. From the repository root (the image builds from there):
 
 ```bash
-fly launch --dockerfile Dockerfile --no-deploy
+fly launch --dockerfile example/Dockerfile --no-deploy
 ```
 
 3. Edit the generated `fly.toml` — ensure the `[[services]]` block uses

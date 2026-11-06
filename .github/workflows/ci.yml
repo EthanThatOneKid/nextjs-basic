@@ -134,3 +134,49 @@ jobs:
           npm install --no-audit --no-fund --legacy-peer-deps "$GITHUB_WORKSPACE"/nextjs-basic-*.tgz
           node -e "const m = require('nextjs-basic'); if (typeof m.withBasic !== 'function') process.exit(1); require('nextjs-basic/runtime'); console.log('package loads')"
           test -f node_modules/nextjs-basic/src/runtime/runtime.bas
+
+  # The deployment story depends on this image, so build it, start it and call the routes.
+  docker:
+    name: Docker image
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the image
+        run: docker build -f example/Dockerfile -t nextjs-basic-example .
+
+      - name: Start the container
+        run: docker run -d --name app -p 3000:3000 nextjs-basic-example
+
+      - name: Call every example route
+        shell: bash
+        run: |
+          set -eu
+          base=http://127.0.0.1:3000
+
+          echo "waiting for the server"
+          for i in $(seq 1 45); do
+            if curl -fsS "$base/api/status" > /dev/null 2>&1; then break; fi
+            sleep 2
+          done
+
+          curl -fsS "$base/api/status" > /dev/null || { echo "FAIL: the server never became ready"; exit 1; }
+
+          check() { # name, expected substring, actual
+            if printf '%s' "$3" | grep -qF -- "$2"; then echo "ok   $1"; else echo "FAIL $1: expected '$2' in: $3"; exit 1; fi
+          }
+
+          check "GET with a query string" 'Hello, Docker!' "$(curl -fsS "$base/api/hello?name=Docker")"
+          check "POST with a body" 'hi hi' "$(curl -fsS -X POST -H 'content-type: application/json' -d '{"message":"hi","count":2}' "$base/api/echo")"
+          check "Fail returns 400" '400' "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' -d '{}' "$base/api/echo")"
+          check "dynamic segment and query" '"id":"42"' "$(curl -fsS "$base/api/users/42?verbose=1")"
+          check "Fail returns 404" '404' "$(curl -s -o /dev/null -w '%{http_code}' "$base/api/users/0")"
+          check "CORS header" 'access-control-allow-origin: *' "$(curl -fsS -D - -o /dev/null "$base/api/status" | tr 'A-Z' 'a-z')"
+          check "HEAD has no body" '200' "$(curl -s -o /dev/null -w '%{http_code}' -I "$base/api/status")"
+          check "OPTIONS preflight" '204' "$(curl -s -o /dev/null -w '%{http_code}' -X OPTIONS "$base/api/status")"
+
+      - name: Container log
+        if: always()
+        run: docker logs app
