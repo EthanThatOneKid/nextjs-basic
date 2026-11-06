@@ -81,10 +81,11 @@ build error.
 
 ## Testing
 
-`npm test` runs the unit tests everywhere. The end-to-end tests compile the
-example routes with QB64 and talk to them over STDIO. They run when a QB64
-compiler is found and skip otherwise. CI installs QB64-PE on the Windows job, so
-the e2e tests run there on every push. Ubuntu and macOS run the unit tests only.
+`npm test` runs the unit tests and the end-to-end tests. The end-to-end tests
+compile the example routes with QB64 and talk to them over STDIO. They run when a
+QB64 compiler is found (`QB64_PATH`, `qb64pe` or `qb64` on `PATH`) and skip
+otherwise. CI installs or builds QB64-PE on Ubuntu, Windows and macOS, and fails if
+no compiler is found, so the end-to-end tests run on all three on every push.
 
 ## Generated files
 

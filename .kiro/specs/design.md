@@ -4,266 +4,184 @@
 
 ```
 nextjs-basic/
-├── package.json
-├── tsconfig.json
+├── .kiro/specs/               requirements.md, design.md (this file)
+├── docs/
+│   ├── writing-routes.md      user reference for route.bas
+│   ├── deployment.md          Railway / Fly.io / Render
+│   └── submission.md          hackathon write-up
 ├── src/
-│   ├── index.ts              # withBasic() export — Next.js config wrapper
-│   ├── plugin.ts             # webpack plugin: scans .bas, triggers build steps
-│   ├── compiler.ts           # shells out to qb64 + GCC, manages bin/ output
-│   ├── codegen.ts            # bas-parser → route.types.ts + route.ts shim
+│   ├── index.ts               withBasic()
+│   ├── plugin.ts              webpack plugin: scan, generate, compile
+│   ├── codegen.ts             parser, TS generator, QB64 glue generator
+│   ├── compiler.ts            QB64 invocation
+│   ├── types.ts               shared types and error classes
 │   ├── runtime/
-│   │   ├── basicRuntime.ts   # Node.js child_process manager (callBasic)
-│   │   └── runtime.bas       # QB64 STDIO loop + ParseBody/WriteBody helpers
-│   └── types.ts              # shared internal TypeScript types
-├── example/
-│   └── app/api/hello/
-│       └── route.bas         # minimal demo endpoint
-└── docs/
-    └── README.md
+│   │   ├── basicRuntime.ts    Node side: child processes, STDIO protocol
+│   │   └── runtime.bas        QB64 side: request loop and handler API
+│   └── __tests__/             unit tests, e2e tests, fixtures
+├── example/                   hello, echo, users/[id], status routes; Dockerfile
+├── tsconfig.json              type-checks everything, tests included
+├── tsconfig.build.json        what ships in dist/ (no tests)
+└── .github/workflows/ci.yml
 ```
 
----
-
-## Layer diagram
+## Layers
 
 ```
-Next.js request
-      │
-      ▼
-route.ts (generated shim)
-      │  callBasic({ endpoint, _id, bodyJson, method, path })
-      ▼
-basicRuntime.ts
-      │  JSON line → STDIN
-      ▼
-bin/<route-name>  (QB64 native binary, persistent process)
-      │  JSON line ← STDOUT
-      ▼
-basicRuntime.ts
-      │  resolved Promise
-      ▼
-route.ts  →  NextResponse.json(result)
+ route.bas  (user: TYPE Request/Response, SUB OnGet ...)
+     │  parsed at build time
+     ▼
+ codegen.ts ──► route.types.ts   TypeScript interfaces
+            ──► route.ts         Next.js handler per method
+            ──► route.glue_decls.bas / route.glue.bas   QB64 glue
+     │
+     ▼
+ compiler.ts: glue_decls + runtime.bas + route.bas + glue ──qb64 -x──► bin/<route>
+
+ at request time:
+ Next.js ► route.ts ► basicRuntime.ts ══ one JSON line over STDIO ══► bin/<route>
+                                      ◄═ one JSON line back ═══════
 ```
 
----
+## Components
 
-## Component designs
+### `withBasic()` and `BasicPlugin` (`index.ts`, `plugin.ts`)
 
-### 1. `withBasic()` — `src/index.ts`
+`withBasic` adds the webpack plugin to the Next.js config. `BasicPlugin` walks
+`app/api/**/route.bas` before each compile and again when a `route.bas` changes in
+watch mode. For each route it parses the file, fails the build if no handler exists,
+writes the generated files, and compiles unless the binary is up to date. "Up to
+date" means newer than `route.bas`, `runtime.bas` and the plugin's own `codegen.js`
+and `compiler.js`. Errors from any route are printed and fail the build.
 
-Wraps the user's Next.js config and injects the webpack plugin.
+### Parser and generators (`codegen.ts`)
 
-```ts
-export function withBasic(nextConfig: NextConfig = {}): NextConfig {
-  return {
-    ...nextConfig,
-    webpack(config, options) {
-      config.plugins.push(new BasicPlugin(options));
-      if (typeof nextConfig.webpack === 'function') {
-        return nextConfig.webpack(config, options);
-      }
-      return config;
-    },
-  };
-}
+`parseBasFile` reads the file line by line:
+
+- `TYPE … END TYPE` blocks: fields are mapped to TypeScript types; unsupported
+  types raise a `ParseError` with file, line, field and reason.
+- Handlers are recognised as `SUB On<Method>` at the start of a line, case
+  insensitive. `FUNCTION RunRoute$` raises a migration error.
+- `routeNameFor` derives the endpoint name from the path below `app/api`.
+
+Generators:
+
+- `generateTypes`: interfaces, with `Request`/`Response` renamed per route and a
+  `…Route` pair when both exist.
+- `generateShim`: one exported function per handler. It reads the body (empty on
+  failure), query string, headers and `await ctx.params`, calls `callBasic`, applies
+  `headers` from the reply, and returns the parsed body with the route's status.
+  HEAD, and statuses 204, 205 and 304, return no body. An OPTIONS handler gets an
+  `Allow` header listing the route's methods unless the route set one. The shim must
+  type-check under `next build`.
+- `generateQB64GlueDecls`: `DIM SHARED Req AS Request`, `Resp AS Response` and a
+  blank `RespBlank`, only for the types that exist. It is concatenated first because
+  QB64 needs shared declarations before the first `SUB`.
+- `generateQB64Glue`: `ParseRequest` (JSON → `Req`, with integer range checks),
+  `WriteResponse$` (`Resp` → JSON, escaped, valid numbers), `GluePrepare` (clear
+  `Resp`; fill `Req` from the query for GET and HEAD, from the body otherwise),
+  `GlueDispatch` (a `SELECT CASE` over the detected methods, `Fail 405` otherwise),
+  `GlueFinish$` and `AllowCors`.
+- `writeGeneratedFiles` also writes the `.gitignore` next to the route.
+
+QB64 cannot pass a user `TYPE` to a `SUB` or `FUNCTION`, which is why `Req` and
+`Resp` are shared variables and the glue takes and returns strings.
+
+### Compiler (`compiler.ts`)
+
+Finds QB64 (`QB64_PATH`, `qb64pe`, `qb64`), concatenates the four sources in a
+fixed order (glue declarations, runtime, user route, glue), compiles headless with
+`-x` to an absolute output path, ensures `bin/.gitignore`, and reports QB64's own
+error lines on failure.
+
+### QB64 runtime (`runtime.bas`)
+
+- Types `Context` (the request) and `Reply`; shared `Ctx`.
+- Main loop: read a line, fill `Ctx`, reset the reply, run `GluePrepare`,
+  `GlueDispatch`, `GlueFinish$`, print one reply line. `{"_quit":…}` ends the
+  process. Stdout carries only reply lines.
+- Errors: `ON ERROR GOTO` with `RESUME` to a label after the dispatch. `Fail` sets
+  the status and message, then raises error 250, which leaves the handler from any
+  depth. Overflow becomes a 400 and any other runtime error a 500.
+- Known limit: this `ERROR`/`RESUME` path leaks stack. A process dies of "Out of
+  stack space" after about 290 failures on macOS and 1,500 on Windows, sooner when
+  `Fail` is called from deeper helpers. Re-arming `ON ERROR` or leaving the handler
+  with `GOTO` did not help, so the runtime counts failures and sets
+  `"recycle":true` on the reply once it reaches `RecycleAfter` (25).
+- Headers: `SetHeader` validates, then appends a `["name","value"]` pair to the
+  reply. `AllowCors` (generated) calls it for the CORS headers.
+- JSON helpers: `JStr$`, `JVal$` (accepts `3` and `"3"`), `JUn$`/`JEn$` for
+  escapes, `TrimF$`, `NumD$`/`NumS$` for number text, all bounds-checked.
+
+### Node runtime (`basicRuntime.ts`)
+
+One process per route name takes new requests. `callBasic` writes a JSON line with
+a correlation id and waits for the reply with the same id, with a 5 second timeout.
+On a `recycle` reply the process is retired: removed from the table so new requests
+spawn a replacement, and sent `{"_quit":true}` once its queue is empty. A timeout
+kills the process that timed out. An unexpected exit rejects what was in flight.
+`shutdownAll` runs when Node exits. Binaries are looked up in `bin/` under the
+working directory.
+
+## Wire protocol
+
+Request line (JSON):
+
+```
+{"_id":"7","endpoint":"users___id_","method":"GET","path":"/api/users/42",
+ "bodyJson":"{}","queryJson":"{\"verbose\":\"1\"}",
+ "headersJson":"{\"user-agent\":\"x\"}","paramsJson":"{\"id\":\"42\"}"}
 ```
 
-### 2. `BasicPlugin` — `src/plugin.ts`
-
-A webpack plugin. On each compilation:
-
-1. Calls `glob('app/api/**/route.bas')` relative to the project root.
-2. For each found file, calls `buildRoute(filePath)`.
-3. Emits the generated `.ts` files as webpack assets so Next.js sees them.
-4. In `next dev` (watch mode), uses a `watchRun` hook to re-build changed
-   `.bas` files only.
-
-### 3. `buildRoute(basFile)` — `src/compiler.ts`
+Reply line:
 
 ```
-basFile: app/api/hello/route.bas
-         │
-         ├─ codegen.parseAndGenerate(basFile)
-         │    → writes app/api/hello/route.types.ts
-         │    → writes app/api/hello/route.ts  (shim)
-         │
-         └─ compiler.compile(basFile)
-              → concatenates runtime.bas + route.bas → /tmp/<id>.bas
-              → runs: qb64 -c /tmp/<id>.bas -o bin/hello
-              → on error: throws BuildError with file + line
+{"_id":"7","statusCode":200,"bodyJson":"{\"id\":\"42\"}",
+ "headers":[["Cache-Control","no-store"]],"recycle":true}
 ```
 
-### 4. `bas-parser` — `src/codegen.ts`
-
-Reads the `.bas` file and extracts `TYPE … END TYPE` blocks.
-
-**Parse rules:**
-- Lines are trimmed and uppercased for matching.
-- `TYPE <name>` opens a block; `END TYPE` closes it.
-- Each field line matches: `<name> AS <type>` or `AS <type> <name>, ...`
-- Supported types: see FR-6 in requirements.md.
-- Unsupported type → throw `ParseError(file, lineNumber, fieldName, reason)`.
-
-**Type mapping function:**
-
-```ts
-function qb64TypeToTs(qbType: string): string {
-  const t = qbType.trim().toUpperCase();
-  if (t.startsWith('STRING *'))    return 'string';
-  if (t === 'INTEGER')             return 'number';
-  if (t === 'LONG')                return 'number';
-  if (t === 'SINGLE')              return 'number';
-  if (t === 'DOUBLE')              return 'number';
-  if (t === '_BYTE')               return 'number';
-  if (t === '_FLOAT')              return 'number';
-  if (t === '_INTEGER64')          return 'bigint';
-  if (t.startsWith('_UNSIGNED'))   return resolveUnsigned(t);
-  // nested type reference — resolved at emit time
-  return t; // treated as interface reference
-}
-```
-
-**Emitted `route.types.ts`:**
-
-```ts
-// AUTO-GENERATED — do not edit
-// Source: app/api/hello/route.bas
-
-export interface HelloBody {
-  name: string;
-  age: number;
-}
-
-export interface HelloResult {
-  message: string;
-  statusCode: number;
-}
-```
-
-**Emitted `route.ts` shim:**
-
-```ts
-// AUTO-GENERATED — do not edit
-import { NextRequest, NextResponse } from 'next/server';
-import { callBasic } from '@nextjs-basic/runtime';
-export type { HelloBody, HelloResult } from './route.types';
-
-export async function GET(req: NextRequest) {
-  const body = await req.json().catch(() => ({}));
-  const raw = await callBasic({
-    endpoint: 'hello',
-    method: 'GET',
-    path: req.nextUrl.pathname,
-    bodyJson: JSON.stringify(body),
-  });
-  return NextResponse.json(JSON.parse(raw));
-}
-```
-
-### 5. `basicRuntime.ts` — `src/runtime/basicRuntime.ts`
-
-Manages one persistent child process per route binary.
-
-- `getProc(routeName)`: lazily spawns `./bin/<routeName>`, caches by name.
-- `callBasic(payload)`: assigns `_id`, writes JSON line to STDIN, registers
-  promise in a `Map<id, resolve>`, resolves when STDOUT line with matching
-  `_id` arrives.
-- 5-second timeout per call; rejects with `QB64TimeoutError`.
-- On process exit: clears cache entry so next call re-spawns.
-- All pending promises for a crashed process reject with `QB64CrashError`.
-
-### 6. `runtime.bas` — `src/runtime/runtime.bas`
-
-Injected before the user's `route.bas` at compile time. Never visible to the
-user.
-
-Responsibilities:
-- Declare framework `TYPE Request` and `TYPE Response`.
-- Run the main `DO … LOOP` reading `LINE INPUT` from STDIN.
-- Parse the `_id` field from the incoming JSON line.
-- Dispatch to the correct handler function based on the `method` field.
-- Call `ParseBody` to fill user TYPE from `req.bodyJson`.
-- Call `WriteBody` to serialize user TYPE into `resp.bodyJson`.
-- Print the response JSON line (including `_id`) to STDOUT.
-- `FLUSH` after every PRINT to ensure Node.js sees the line immediately.
-
-**ParseBody / WriteBody** are macro-style SUBs that accept the raw JSON string
-and a TYPE variable passed by reference. Implementation uses QB64 string
-scanning (no external library). Fixed-length strings are null/space-padded;
-the serializer calls `RTRIM$` before writing.
-
----
+`bodyJson` is a JSON string holding the response body. `recycle` appears only when
+the process wants to be replaced.
 
 ## Error handling
 
-| Error site | Error type | Surface |
-|---|---|---|
-| Unsupported QB64 type in parser | `ParseError` | Next.js build error with file + line |
-| `qb64` binary not found | `CompilerNotFoundError` | Build error with install hint |
-| `qb64` compile failure | `CompileError` | Build error forwarding QB64 stderr |
-| Runtime timeout (5s) | `QB64TimeoutError` | HTTP 500, logged to stderr |
-| Binary crash / exit | `QB64CrashError` | HTTP 500, pending requests rejected |
+| Situation | Result |
+|---|---|
+| Unsupported type, nested type, no handler, old `RunRoute$` | Build error with file and reason |
+| QB64 compile error | Build error with QB64's message |
+| `Fail 404, "x"` | 404 `{"error":"x"}`, headers so far kept |
+| Integer out of range | 400 `<field> is out of range` |
+| Invalid header name or value | 500, nothing sent |
+| QB64 runtime error in a handler | 400 (overflow) or 500, process keeps serving |
+| Method without a handler | 405 |
+| No answer in 5 seconds | Timeout error, process replaced |
+| Process crash | In-flight requests fail, next request restarts it |
 
----
+## Build sequence (`next build`)
 
-## Build-time sequence (next build)
+1. `withBasic` registers the plugin.
+2. Before compilation the plugin scans `app/api`, and for each route generates
+   files and compiles if needed.
+3. Next.js compiles and type-checks the generated `route.ts` files.
+4. At runtime the first request to a route starts its binary.
 
-```
-1. webpack init
-2. BasicPlugin.apply(compiler)
-3. compiler 'make' hook fires
-4. glob app/api/**/route.bas  →  [hello, users, ...]
-5. for each route (parallel):
-   a. codegen: parse .bas → emit route.types.ts, route.ts
-   b. compiler: concat runtime.bas + route.bas → tmp
-   c. qb64 -c tmp -o bin/<name>
-   d. rm tmp
-6. webpack continues with generated .ts files in the graph
-7. next build bundles route.ts shims normally
-```
+`next dev` runs the same steps, and rebuilds a route when its `route.bas` changes.
 
----
+## Testing
 
-## Dev-mode sequence (next dev)
+- Unit tests cover the parser, every generator and the route-name logic.
+- End-to-end tests copy the example routes and a fixture that uses every field
+  type into a scratch folder, compile them with a real QB64, and talk to the
+  binaries over STDIO. They cover requests, escaping, ranges, headers and CORS,
+  HEAD and OPTIONS, lifecycle, and 1,700 failures through the real Node runtime.
+- CI runs both on Ubuntu, Windows and macOS, with QB64-PE installed (Windows) or
+  built from source and cached (Linux, macOS). `REQUIRE_QB64` turns a missing
+  compiler into a failure. A separate step packs the package, installs the tarball
+  into an empty project and loads both entry points.
+- Manual checks that CI does not cover: `next dev`, `next build` and `next start`
+  on the example app, and a clean install from GitHub into a new Next.js app.
 
-Same as above, plus:
-- `watchRun` hook watches `.bas` files for changes.
-- On change: re-run steps 5a–5d for the changed route only.
-- Existing binary is replaced atomically (rename over old file).
-- The running child process for that route is killed; next request re-spawns it.
+## Deployment
 
----
-
-## Example user file
-
-```basic
-' app/api/hello/route.bas
-
-TYPE HelloBody
-    name AS STRING * 50
-END TYPE
-
-TYPE HelloResult
-    message AS STRING * 100
-END TYPE
-
-FUNCTION GET (req AS Request, resp AS Response)
-    DIM body AS HelloBody
-    DIM result AS HelloResult
-
-    ParseBody req, body
-
-    result.message = "Hello, " + RTRIM$(body.name) + "!"
-
-    WriteBody resp, result
-    resp.statusCode = 200
-END FUNCTION
-```
-
-That is everything the user writes. The plugin handles the rest.
-
----
-
-## Out of scope (v1)
-
-See requirements.md — Out of Scope section.
+A persistent Node server is required. `example/Dockerfile` builds QB64-PE, compiles
+the routes and runs `next start`. See `docs/deployment.md`.
