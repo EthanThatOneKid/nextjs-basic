@@ -58,6 +58,9 @@ export function compileRoute(basFile: string, outDir: string): string {
 
   // Ensure output directory exists
   fs.mkdirSync(outDir, { recursive: true });
+  // The compiled binaries are build output, not source
+  const binIgnore = path.join(outDir, '.gitignore');
+  if (!fs.existsSync(binIgnore)) fs.writeFileSync(binIgnore, '*\n', 'utf8');
 
   const ext = os.platform() === 'win32' ? '.exe' : '';
   const outBin = path.join(outDir, routeName + ext);

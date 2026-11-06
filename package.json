@@ -14,7 +14,8 @@
     "src/runtime/runtime.bas"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc -p tsconfig.build.json",
+    "prepare": "npm run build",
     "dev": "tsc --watch",
     "test": "jest",
     "test:watch": "jest --watch"

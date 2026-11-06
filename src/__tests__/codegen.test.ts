@@ -9,6 +9,7 @@ import {
   generateShim,
   generateQB64Glue,
   generateQB64GlueDecls,
+  writeGeneratedFiles,
   routeNameFor,
   routePascal,
   tsName,
@@ -634,5 +635,38 @@ TYPE Helper
 END TYPE
 `)));
     expect(glue).not.toContain('Helper');
+  });
+});
+
+describe('writeGeneratedFiles', () => {
+  const route = `
+TYPE Response
+    message AS STRING * 10
+END TYPE
+
+SUB OnGet
+END SUB
+`;
+
+  test('writes the generated files and a .gitignore that lists them', () => {
+    const file = tmpBas(route);
+    writeGeneratedFiles(parseBasFile(file));
+    const dir = path.dirname(file);
+
+    for (const name of ['route.ts', 'route.types.ts', 'route.glue.bas', 'route.glue_decls.bas']) {
+      expect(fs.existsSync(path.join(dir, name))).toBe(true);
+    }
+    const ignore = fs.readFileSync(path.join(dir, '.gitignore'), 'utf8').split('\n');
+    expect(ignore).toEqual(expect.arrayContaining(['route.ts', 'route.types.ts', 'route.glue.bas', 'route.glue_decls.bas']));
+    // the user's own file is never ignored
+    expect(ignore).not.toContain('route.bas');
+  });
+
+  test('running it twice leaves the same .gitignore', () => {
+    const file = tmpBas(route);
+    writeGeneratedFiles(parseBasFile(file));
+    const first = fs.readFileSync(path.join(path.dirname(file), '.gitignore'), 'utf8');
+    writeGeneratedFiles(parseBasFile(file));
+    expect(fs.readFileSync(path.join(path.dirname(file), '.gitignore'), 'utf8')).toBe(first);
   });
 });
