@@ -286,7 +286,9 @@ describeE2E('echo route (POST, body -> Req, Fail)', () => {
   });
 
   test('survives many failures in a row and still answers', async () => {
-    for (let i = 0; i < 300; i++) {
+    // stays under the 25-failure recycle budget: a bare process would crash at about
+    // 290 failures on macOS, which is what the recycle tests below are about
+    for (let i = 0; i < 20; i++) {
       expect((await c.post({})).status).toBe(400);
     }
     const ok = await c.post({ message: 'still alive', count: 1 });
@@ -509,10 +511,10 @@ describeE2E('response headers (SetHeader, AllowCors)', () => {
 // ---------------------------------------------------------------------------
 
 describeE2E('failure budget (recycle)', () => {
-  test('the 500th failed response asks for a replacement, earlier ones do not', async () => {
+  test('the 25th failed response asks for a replacement, earlier ones do not', async () => {
     const c = new Client(bins.types);
     try {
-      for (let i = 1; i < 500; i++) {
+      for (let i = 1; i < 25; i++) {
         const r = await c.post({}, 'DELETE');
         expect(r.status).toBe(418);
         expect(r.recycle).toBeUndefined();
@@ -529,7 +531,8 @@ describeE2E('failure budget (recycle)', () => {
   }, 60000);
 
   test('the Node runtime survives far more failures than one process can', async () => {
-    // one process dies at about 1,500 failures; this sends 1,700 through callBasic
+    // one process dies after 290 (macOS) to 1,500 (Windows) failures; this sends 1,700
+    // through callBasic, so it only passes when processes are replaced along the way
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nb-recycle-'));
     const binDir = path.join(dir, 'bin');
     fs.mkdirSync(binDir);

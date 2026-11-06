@@ -158,6 +158,7 @@ The compiled binary goes to `bin/<name>` (`.exe` on Windows) at the project root
 - A request that takes more than 5 seconds kills the process and fails with a timeout. The next request starts a fresh one.
 - A crash fails the requests in flight, and the next request restarts it.
 - Your own variables keep their values between requests inside one process. The process can restart at any time, so don't rely on that.
+- After every 25 failed requests (a `Fail` or a runtime error) the plugin starts a fresh process, because each early exit leaves a little QB64 stack behind and a process eventually dies of it (after about 290 failures on macOS, about 1,500 on Windows). Requests already sent to the old process are still answered, and none are dropped. Your variables start over in the new process.
 - Requests to the same route go down one pipe, so a slow handler holds up the others.
 - QB64 cannot see its input close. The Node runtime sends `{"_quit":true}` and also kills its routes on exit, but a process whose parent was killed outright keeps running until you stop it.
 

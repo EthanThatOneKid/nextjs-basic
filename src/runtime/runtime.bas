@@ -51,9 +51,10 @@ DIM SHARED gHeaders AS STRING
 DIM SHARED gFailCount AS LONG
 
 ' Each Fail leaves a little QB64 stack behind (ERROR + RESUME never gives it back),
-' and the process dies of "Out of stack space" after roughly 1,500 of them. The reply
-' asks the host to replace this process well before that.
-CONST RecycleAfter = 500
+' and the process dies of "Out of stack space": after about 1,500 of them on Windows
+' but only about 290 on macOS, and sooner the deeper Fail is called from. The reply
+' asks the host to replace this process long before that.
+CONST RecycleAfter = 25
 
 ' ---------------------------------------------------------------------------
 ' Main STDIO loop: one JSON request line in, one JSON response line out
