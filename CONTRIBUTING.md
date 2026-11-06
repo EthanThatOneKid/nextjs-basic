@@ -4,9 +4,10 @@ Thanks for your interest! This is a Kiroween 2026 hackathon project. Contributio
 
 ## Prerequisites
 
-- Node.js 20+
-- [QB64](https://qb64.com) (for e2e tests and local compilation)
+- Node.js 20 or newer
+- [QB64-PE](https://github.com/QB64-Phoenix-Edition/QB64pe/releases), for the end-to-end tests and local compilation. QB64 2.1 also works. The tests look for `QB64_PATH`, then `qb64pe`, then `qb64` on your `PATH`.
 - npm
+- Docker, only if you want to build the example image locally. CI builds it anyway.
 
 ## Setup
 
@@ -22,8 +23,20 @@ npm install --legacy-peer-deps
 npm test
 ```
 
-Unit tests run without QB64. E2e tests auto-skip when `qb64` is not on `PATH`.
-Set `QB64_PATH=/path/to/qb64` to run e2e tests locally.
+This runs three kinds of test:
+
+- **Unit tests** (`codegen.test.ts`, `plugin.test.ts`) need no compiler.
+- **End-to-end tests** (`e2e.test.ts`) compile the example routes and a fixture that uses every field type, then talk to the binaries over the same STDIO protocol the plugin uses. They skip when no QB64 compiler is found. Set `QB64_PATH=/path/to/qb64pe` to run them.
+- **Docs checks** (`docs.test.ts`) compare the docs with the code: handler names, the recycle budget, environment variables, example routes, the QB64-PE version and links. If you change one of those, update the docs in the same PR and this test will tell you what you missed.
+
+Two environment variables help when debugging:
+
+| Variable | Effect |
+|---|---|
+| `REQUIRE_QB64=1` | Fail instead of skipping the e2e tests when no compiler is found (CI sets it) |
+| `E2E_TRACE=1` | Log each compile, process start and test name to stderr, so a hang shows where it stopped |
+
+CI runs everything on Ubuntu, Windows and macOS, and a `docker` job builds the example image and calls every route.
 
 ## Type-check
 
@@ -41,34 +54,49 @@ npm run build
 
 ```
 src/
-  codegen.ts        QB64 TYPE parser + TypeScript codegen
+  codegen.ts        parser, TypeScript generator, QB64 glue generator
   compiler.ts       QB64 → native binary compile step
-  plugin.ts         webpack plugin (Next.js integration)
+  plugin.ts         webpack plugin, and prepareRoutes() (writes route files at config load)
   index.ts          withBasic() public API
   types.ts          shared error classes
   runtime/
     basicRuntime.ts Node.js child process manager
-    runtime.bas     QB64 STDIO loop (invisible to users)
+    runtime.bas     QB64 request loop and handler API (invisible to users)
   __tests__/
-    codegen.test.ts unit tests
-    e2e.test.ts     QB64 integration tests (skipped without QB64)
+    codegen.test.ts unit tests for the parser and generators
+    plugin.test.ts  unit tests for config-time generation
+    docs.test.ts    checks that the docs match the code
+    e2e.test.ts     end-to-end tests (need a QB64 compiler)
+    fixtures/types/ route that uses every field type
 example/
-  app/api/hello/route.bas   minimal GET example
-  app/api/echo/route.bas    POST echo example
+  app/api/hello/route.bas      GET, query string
+  app/api/echo/route.bas       POST, Fail
+  app/api/users/[id]/route.bas dynamic segment, headers
+  app/api/status/route.bas     HEAD, OPTIONS, CORS
+  Dockerfile                   image for Railway / Fly.io / Render
+docs/
+  writing-routes.md reference for writing a route
+  deployment.md     hosting guide
+  submission.md     hackathon write-up
+.kiro/specs/        requirements and design
+tsconfig.json       type-checks everything, tests included
+tsconfig.build.json what ships in dist/ (no tests)
 ```
 
 ## Adding a new feature
 
-1. Write the test first in `src/__tests__/codegen.test.ts`
+1. Write the test first: `codegen.test.ts` for the parser and generators, `e2e.test.ts` for runtime behavior
 2. Implement in the relevant `src/` file
-3. Verify: `npx tsc --noEmit && npm test`
-4. Open a PR against `main`
+3. Update the docs it touches (`docs/writing-routes.md`, and the specs for design changes)
+4. Verify: `npx tsc --noEmit && npm test`
+5. Open a PR against `main`
 
 ## QB64 type system notes
 
 Only types valid inside a QB64 `TYPE` block are supported. See the type table
-in `README.md`. Bare `STRING`, `_BIT`, `_OFFSET`, `_MEM`, and array fields
-inside TYPE blocks are rejected with a build error.
+in `README.md`. Bare `STRING`, `_BIT`, `_OFFSET`, `_MEM`, array fields and nested
+`TYPE` fields are rejected with a build error. `docs/writing-routes.md` lists the
+QB64 naming and calling rules that have bitten before.
 
 ## Commit style
 

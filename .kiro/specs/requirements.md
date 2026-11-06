@@ -117,8 +117,11 @@ Rejected with a build error naming the file, field and reason: bare `STRING`,
 ### FR-8 Build integration
 
 - `withBasic(nextConfig)` in `next.config.js` hooks the webpack build.
+- The generated files (`route.ts`, `route.types.ts`, glue) are written as soon as the
+  config loads, because Next.js looks for route files before webpack starts. A fresh
+  checkout must build with its API routes.
 - On `next build` and `next dev` the plugin, for every route: parses it, writes
-  the generated files, and compiles one binary into `bin/`.
+  the generated files again, and compiles one binary into `bin/`.
 - A route whose binary is newer than its source, the runtime and the plugin is not
   rebuilt (rebuilding an exe that is running fails on Windows).
 - Compiler lookup: `QB64_PATH`, then `qb64pe`, then `qb64` on `PATH`. Compilation
@@ -128,6 +131,7 @@ Rejected with a build error naming the file, field and reason: bare `STRING`,
 - Generated files are ignored by git: the plugin writes a `.gitignore` next to each
   route and one into `bin/`.
 - `next build` must pass: the generated `route.ts` must type-check.
+- The example `Dockerfile` must build an image that serves every example route.
 
 ### FR-9 Distribution
 

@@ -47,7 +47,7 @@ nextjs-basic/
 
 ### `withBasic()` and `BasicPlugin` (`index.ts`, `plugin.ts`)
 
-`withBasic` adds the webpack plugin to the Next.js config. `BasicPlugin` walks
+`withBasic` calls `prepareRoutes` when the config loads, which parses every route and writes its generated files (no compiling). That has to happen first, because Next.js looks for `route.ts` files before webpack starts. It then adds the webpack plugin to the Next.js config. `BasicPlugin` walks
 `app/api/**/route.bas` before each compile and again when a `route.bas` changes in
 watch mode. For each route it parses the file, fails the build if no handler exists,
 writes the generated files, and compiles unless the binary is up to date. "Up to
@@ -159,11 +159,12 @@ the process wants to be replaced.
 
 ## Build sequence (`next build`)
 
-1. `withBasic` registers the plugin.
-2. Before compilation the plugin scans `app/api`, and for each route generates
-   files and compiles if needed.
-3. Next.js compiles and type-checks the generated `route.ts` files.
-4. At runtime the first request to a route starts its binary.
+1. `withBasic` writes every route's generated files as the config loads, then registers the plugin.
+2. Next.js finds the `route.ts` files.
+3. Before compilation the plugin scans `app/api` again, regenerates the files and
+   compiles each route if needed.
+4. Next.js compiles and type-checks the generated `route.ts` files.
+5. At runtime the first request to a route starts its binary.
 
 `next dev` runs the same steps, and rebuilds a route when its `route.bas` changes.
 
@@ -178,10 +179,18 @@ the process wants to be replaced.
   built from source and cached (Linux, macOS). `REQUIRE_QB64` turns a missing
   compiler into a failure. A separate step packs the package, installs the tarball
   into an empty project and loads both entry points.
-- Manual checks that CI does not cover: `next dev`, `next build` and `next start`
-  on the example app, and a clean install from GitHub into a new Next.js app.
+- A `docker` CI job builds the example image, starts it and calls every example route.
+- `plugin.test.ts` covers config-time generation. `docs.test.ts` checks the docs
+  against the code (handler names, the recycle budget, environment variables,
+  example routes, links).
+- Manual checks that CI does not cover: a clean install from GitHub into a new
+  Next.js app, and deploying to a real host.
 
 ## Deployment
 
-A persistent Node server is required. `example/Dockerfile` builds QB64-PE, compiles
-the routes and runs `next start`. See `docs/deployment.md`.
+A persistent Node server is required. `example/Dockerfile` is one image on `node:22-bookworm`:
+it installs the C++ toolchain and libraries, builds QB64-PE from its release source
+(with a warm-up compile), installs the plugin and the example, runs `next build`
+(which compiles every route), and starts `next start` on `$PORT` or 3000. It is one
+image because the compiled routes link against the same libraries as the compiler.
+CI builds it, starts it and calls every example route. See `docs/deployment.md`.
