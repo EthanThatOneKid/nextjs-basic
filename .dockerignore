@@ -1,0 +1,16 @@
+.git
+node_modules
+dist
+*.tgz
+
+# build output and generated files: the image makes its own
+example/node_modules
+example/.next
+example/bin
+example/bin-pe
+example/*.log
+example/app/api/**/route.ts
+example/app/api/**/route.types.ts
+example/app/api/**/route.glue.bas
+example/app/api/**/route.glue_decls.bas
+example/app/api/**/.gitignore
