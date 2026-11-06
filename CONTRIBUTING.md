@@ -74,6 +74,11 @@ example/
   app/api/users/[id]/route.bas dynamic segment, headers
   app/api/status/route.bas     HEAD, OPTIONS, CORS
   Dockerfile                   image for Railway / Fly.io / Render
+scripts/
+  check-routes.sh         calls every example route on a running server (CI and deploys)
+  deploy-cloud-run.sh     deploys the example to Google Cloud Run, checks it, deletes it
+deploy/
+  cloudbuild.yaml         Cloud Build config for the example image
 docs/
   writing-routes.md reference for writing a route
   deployment.md     hosting guide

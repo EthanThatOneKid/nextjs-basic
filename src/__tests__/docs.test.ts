@@ -109,6 +109,31 @@ describe('example routes', () => {
   });
 });
 
+describe('scripts and deploy files', () => {
+  const files = ['scripts', 'deploy']
+    .flatMap(dir => fs.readdirSync(path.join(ROOT, dir)).map(f => `${dir}/${f}`));
+
+  test('there are files to check', () => {
+    expect(files.length).toBeGreaterThan(0);
+  });
+
+  test('CONTRIBUTING lists each one', () => {
+    const text = read('CONTRIBUTING.md');
+    expect(files.filter(f => !text.includes(path.basename(f)))).toEqual([]);
+  });
+
+  test('docs/deployment.md names the deploy script and its safety flags', () => {
+    const text = read('docs/deployment.md');
+    for (const phrase of ['scripts/deploy-cloud-run.sh', '--public', '--keep', 'scripts/check-routes.sh']) {
+      expect(text).toContain(phrase);
+    }
+  });
+
+  test('the deploy script still refuses to run without --public', () => {
+    expect(read('scripts/deploy-cloud-run.sh')).toContain('Refusing to run without --public');
+  });
+});
+
 describe('versions', () => {
   test('CI and the Dockerfile build the same QB64-PE release', () => {
     const ci = read('.github/workflows/ci.yml').match(/QB64PE_VERSION: (\S+)/);
