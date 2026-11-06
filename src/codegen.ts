@@ -268,10 +268,16 @@ export function generateShim(parsed: ParsedRoute): string {
       lines.push(`  if (!headers.has('Allow')) headers.set('Allow', ${JSON.stringify(allowHeader(parsed))});`);
     }
     lines.push(`  const status = result.statusCode ?? 200;`);
-    lines.push(`  if (${JSON.stringify(method)} === 'HEAD' || status === 204 || status === 205 || status === 304) {`);
-    lines.push(`    return new NextResponse(null, { status, headers });`);
-    lines.push(`  }`);
-    lines.push(`  return NextResponse.json(data, { status, headers });`);
+    if (method === 'HEAD') {
+      // a HEAD response never has a body
+      lines.push(`  return new NextResponse(null, { status, headers });`);
+    } else {
+      // these statuses cannot carry a body either
+      lines.push(`  if (status === 204 || status === 205 || status === 304) {`);
+      lines.push(`    return new NextResponse(null, { status, headers });`);
+      lines.push(`  }`);
+      lines.push(`  return NextResponse.json(data, { status, headers });`);
+    }
     lines.push(`}`);
     lines.push('');
   }

@@ -329,10 +329,24 @@ END SUB
 
   test('responses that cannot carry a body are sent without one', () => {
     const shim = generateShim(parseBasFile(tmpBas(twoMethods)));
-    expect(shim).toContain("status === 204 || status === 205 || status === 304");
+    expect(shim).toContain('status === 204 || status === 205 || status === 304');
     expect(shim).toContain('return new NextResponse(null, { status, headers });');
-    // HEAD always drops the body, and only HEAD handlers say so
-    expect(shim).toContain('"GET" === \'HEAD\'');
+  });
+
+  test('a HEAD handler always sends no body, with no comparison TypeScript would reject', () => {
+    const shim = generateShim(parseBasFile(tmpBas(`
+SUB OnHead
+END SUB
+`)));
+    expect(shim).toContain('export async function HEAD');
+    expect(shim).toContain('return new NextResponse(null, { status, headers });');
+    expect(shim).not.toContain('NextResponse.json');
+  });
+
+  test('the generated shim has no always-false comparisons (next build type-checks it)', () => {
+    const shim = generateShim(parseBasFile(tmpBas(twoMethods)));
+    // "GET" === 'HEAD' is a TypeScript error: the two literal types do not overlap
+    expect(shim).not.toMatch(/"[A-Z]+" === '/);
   });
 
   test('an OPTIONS handler sets the Allow header Next.js would have set', () => {
@@ -363,14 +377,6 @@ SUB OnGet
 END SUB
 `)));
     expect(shim).not.toContain('Allow');
-  });
-
-  test('a HEAD handler always sends no body', () => {
-    const shim = generateShim(parseBasFile(tmpBas(`
-SUB OnHead
-END SUB
-`)));
-    expect(shim).toContain('"HEAD" === \'HEAD\'');
   });
 
   test('returns the parsed body with the status the route chose', () => {
