@@ -162,6 +162,8 @@ jobs:
             sleep 2
           done
 
+          curl -fsS "$base/api/status" > /dev/null || { echo "FAIL: the server never became ready"; exit 1; }
+
           check() { # name, expected substring, actual
             if printf '%s' "$3" | grep -qF -- "$2"; then echo "ok   $1"; else echo "FAIL $1: expected '$2' in: $3"; exit 1; fi
           }

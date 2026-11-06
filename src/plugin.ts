@@ -5,6 +5,7 @@ import * as fs from 'fs';
 import type { Compiler } from 'webpack';
 import { parseBasFile, writeGeneratedFiles } from './codegen';
 import { compileRoute } from './compiler';
+import type { ParsedRoute } from './types';
 
 function globBasFiles(projectRoot: string): string[] {
   const apiDir = path.join(projectRoot, 'app', 'api');
@@ -27,10 +28,9 @@ function globBasFiles(projectRoot: string): string[] {
   return results;
 }
 
-function buildRoute(basFile: string, projectRoot: string, isVerbose: boolean): void {
-  const label = path.relative(projectRoot, basFile).replace(/\\/g, '/');
-  if (isVerbose) console.log(`[nextjs-basic] building ${label}`);
-
+/** Parse a route and write its generated files (route.ts, types, glue). */
+function prepareRoute(basFile: string, projectRoot: string): ParsedRoute {
+  const label = path.relative(projectRoot, basFile).split(path.sep).join('/');
   const parsed = parseBasFile(basFile);
   if (parsed.methods.length === 0) {
     throw new Error(
@@ -39,6 +39,25 @@ function buildRoute(basFile: string, projectRoot: string, isVerbose: boolean): v
     );
   }
   writeGeneratedFiles(parsed);
+  return parsed;
+}
+
+/**
+ * Write the generated route.ts files for every route.bas, without compiling anything.
+ *
+ * Next.js looks for route files before webpack starts, so on a fresh checkout these
+ * files must already exist when the config loads. Otherwise `next build` never sees
+ * the API routes. (`next dev` picks new files up later, which hid this.)
+ */
+export function prepareRoutes(projectRoot: string): void {
+  for (const basFile of globBasFiles(projectRoot)) prepareRoute(basFile, projectRoot);
+}
+
+function buildRoute(basFile: string, projectRoot: string, isVerbose: boolean): void {
+  const label = path.relative(projectRoot, basFile).replace(/\\/g, '/');
+  if (isVerbose) console.log(`[nextjs-basic] building ${label}`);
+
+  const parsed = prepareRoute(basFile, projectRoot);
 
   const binDir = path.join(projectRoot, 'bin');
   const ext = process.platform === 'win32' ? '.exe' : '';
