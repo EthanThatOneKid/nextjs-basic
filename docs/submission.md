@@ -114,7 +114,9 @@ sends 1,700 failures through the real runtime to keep that honest.
 compared a method name with `'HEAD'` in a way TypeScript rejects, and only the
 production build type-checks. And the first `npm install github:…` from a clean
 project gave me a package with no compiled code in it, because nothing built it on
-install. Both are fixed now.
+install. A third one turned up when I finally tested the Docker image: on a fresh
+checkout `next build` produced no API routes at all, because Next.js looks for route
+files before the plugin has generated them. All three are fixed now.
 
 ---
 
@@ -157,8 +159,8 @@ aren't supported. A response header can be added but not replaced, and `AllowCor
 takes a single origin. Request and response types are shared by all methods of a
 route. It needs a persistent server, so Vercel and other serverless platforms
 won't work, but Railway, Fly.io and Render do; there's a `Dockerfile` in `example/`
-and a guide in `docs/deployment.md`. I haven't run that Dockerfile against the
-final version. There's no streaming and no middleware.
+and a guide in `docs/deployment.md`. CI builds that image and calls every route on
+each push, but I haven't deployed it to any of those hosts. There's no streaming and no middleware.
 
 ---
 

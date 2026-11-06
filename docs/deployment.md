@@ -36,9 +36,7 @@ In your own project the plugin comes from `npm install github:EthanThatOneKid/ne
    GitHub repo**.
 3. Railway auto-detects the `Dockerfile`. If it doesn't, set the **Dockerfile
    path** to `example/Dockerfile` in the service settings.
-4. Add a **PORT** environment variable: `3000` (Railway injects `$PORT` but
-   Next.js needs it set).
-5. Click **Deploy**.
+4. Click **Deploy**. Railway sets `$PORT`, and the image listens on it.
 
 Railway provides a public HTTPS URL automatically.
 
@@ -51,7 +49,6 @@ Railway provides a public HTTPS URL automatically.
     "dockerfilePath": "example/Dockerfile"
   },
   "deploy": {
-    "startCommand": "node_modules/.bin/next start",
     "healthcheckPath": "/api/hello",
     "restartPolicyType": "ON_FAILURE"
   }
@@ -79,8 +76,7 @@ fly deploy
 
 Fly gives you a `<app-name>.fly.dev` URL.
 
-**Memory:** QB64 binaries are lean, but give the machine at least **512MB RAM**
-(`fly scale memory 512`).
+**Memory:** I have not measured the image's memory use. 512MB is a starting guess (`fly scale memory 512`), so watch it under real traffic.
 
 ---
 
@@ -91,7 +87,7 @@ Fly gives you a `<app-name>.fly.dev` URL.
 3. Set:
    - **Environment**: Docker
    - **Dockerfile path**: `example/Dockerfile`
-   - **Port**: `3000`
+   - Leave the port to Render: it sets `$PORT` and the image listens on it
 4. Click **Create Web Service**.
 
 ---
@@ -114,7 +110,7 @@ Add a reverse proxy (nginx, Caddy) for HTTPS.
 
 | Variable | Default | Description |
 |---|---|---|
-| `PORT` | `3000` | Port Next.js listens on |
+| `PORT` | `3000` | Port Next.js listens on (platforms like Railway and Render set it) |
 | `NODE_ENV` | `production` | Set to `production` for the runtime image |
 | `NEXTJS_BASIC_VERBOSE` | `0` | Set to `1` for build-time QB64 compile logs |
 

@@ -75,7 +75,7 @@ Set any of the fields of your `TYPE Response`. `Resp` is cleared before each req
 
 Headers set before a `Fail` are still sent, so an error response can carry CORS headers. A header name must be a valid HTTP token, and a value cannot contain a line break. Otherwise the request fails with a 500 rather than letting a response be split.
 
-`Respond 302` with `SetHeader "Location", "/elsewhere"` is a redirect. `Fail` works from anywhere, including a helper SUB you call. Nothing after it runs. If your SUB runs into a QB64 runtime error (for example dividing by zero), the request gets a 500 and the process keeps serving.
+`Respond 302` with `SetHeader "Location", "/elsewhere"` is a redirect. `Fail` works from anywhere, including a helper SUB you call. Nothing after it runs. If your SUB runs into a QB64 runtime error, the request gets a 400 (a number out of range) or a 500 (anything else, such as dividing by zero) and the process keeps serving.
 
 ## CORS
 
@@ -93,7 +93,7 @@ SUB OnOptions
 END SUB
 ```
 
-`AllowCors origin` sets `Access-Control-Allow-Origin`, `Access-Control-Allow-Methods` (the methods this route defines, plus HEAD and OPTIONS), and `Access-Control-Allow-Headers: Content-Type, Authorization`. For a specific origin it also sets `Vary: Origin`. It is a plain helper over `SetHeader`: call it in every handler that browsers on other origins use.
+`AllowCors origin` sets `Access-Control-Allow-Origin`, `Access-Control-Allow-Methods` (the methods this route defines, plus OPTIONS, and HEAD when the route defines GET), and `Access-Control-Allow-Headers: Content-Type, Authorization`. For a specific origin it also sets `Vary: Origin`. It is a plain helper over `SetHeader`: call it in every handler that browsers on other origins use.
 
 It does not cover credentials, a custom header list or `Access-Control-Max-Age`. `SetHeader` adds a header rather than replacing one, so for those write all the CORS headers yourself with `SetHeader` instead of calling `AllowCors`. If you want the same rules on every route, `headers()` in `next.config.js` is also fine.
 
@@ -140,7 +140,7 @@ export interface HelloRoute { request: HelloRequest; response: HelloResponse; }
 
 ## What the plugin generates
 
-All of these sit next to your `route.bas`, and none should be committed.
+All of these sit next to your `route.bas`. The plugin writes a `.gitignore` there (and one in `bin/`), so none of it is committed.
 
 | File | Purpose |
 |---|---|
@@ -164,10 +164,11 @@ The compiled binary goes to `bin/<name>` (`.exe` on Windows) at the project root
 
 ## Build behavior
 
-- Routes are compiled when Next.js builds or starts, with `qb64pe -x` (headless).
+- The generated files are written as soon as the Next.js config loads, because Next.js looks for `route.ts` files before webpack starts. Without that, a fresh checkout would build with no API routes.
+- The routes are compiled during the build, with `qb64pe -x` (headless).
 - A route whose binary is newer than its `route.bas`, `runtime.bas` and the plugin itself is not rebuilt.
 - Compiler lookup: `QB64_PATH`, then `qb64pe`, then `qb64` on your `PATH`.
-- A compile error from QB64 fails the Next.js build.
+- A compile error from QB64 fails the Next.js build. So does a type error in a generated `route.ts`, because `next build` type-checks it.
 - The old `FUNCTION RunRoute$` form is rejected with a message pointing here.
 
 ## QB64 gotchas
