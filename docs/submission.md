@@ -41,44 +41,80 @@ SUB OnGet
 END SUB
 ```
 
-That's the whole file. The plugin takes it from there.
+`GET /api/hello?name=Ada` returns that message as JSON. That's the whole file. The
+plugin takes it from there.
+
+A route can also fail early, set headers, and answer CORS preflights, all from
+BASIC:
+
+```basic
+SUB OnPost
+    IF RTRIM$(Req.message) = "" THEN Fail 400, "message is required"
+    SetHeader "Cache-Control", "no-store"
+    AllowCors "https://app.example.com"
+    ' ...
+END SUB
+```
 
 ---
 
 ## Why QB64 actually works here
 
-QB64 isn't a toy. It transpiles to C++ and compiles to a native binary via GCC.
-The same source file builds on Windows, Linux, and macOS without changes.
+QB64 isn't a toy. It transpiles to C++ and compiles to a native binary. The same
+source builds on Windows, Linux and macOS without changes.
 
-The one thing QB64 can't do is WebSockets or gRPC. But it can read from STDIN
-and write to STDOUT, which is all you need. The plugin spawns the binary once
-per route and keeps it alive — every request is a JSON line in, a JSON line out.
-No cold starts, no per-request process overhead.
-
-In theory a QB64 route is faster than the same logic in TypeScript, because it's
-not running in a JavaScript VM.
+The one thing QB64 can't do is WebSockets or gRPC. But it can read from STDIN and
+write to STDOUT, which is all you need. The plugin starts the binary once per
+route and keeps it alive, so every request is a JSON line in and a JSON line out.
+There's no process start per request.
 
 ---
 
 ## How it works
 
-At `next build` time:
-
-1. The plugin finds every `app/api/**/route.bas`
-2. It parses the `TYPE` blocks and generates `route.types.ts` (TypeScript interfaces) and `route.ts` (a thin Next.js shim)
-3. It concatenates the framework's STDIO loop (`runtime.bas`), the generated type-conversion code (`route.glue.bas`), and your code (`route.bas`), then runs QB64 to compile the whole thing to a binary in `bin/`
+When Next.js builds, the plugin finds every `app/api/**/route.bas`. It parses the
+`TYPE` blocks, writes the TypeScript interfaces and a thin `route.ts` handler, and
+generates the BASIC code that moves data between JSON and your types. That, the
+framework's request loop and your file are compiled into one native binary per
+route.
 
 At request time:
 
 ```
-Next.js → route.ts shim → Node.js child process → QB64 binary (STDIO) → response
+Next.js → route.ts → Node.js child process → QB64 binary (STDIO) → response
 ```
 
-The QB64 binary fills `Req` from the query string or JSON body, calls the
-`OnGet` / `OnPost` SUB that matches the method, and writes `Resp` back as JSON.
-The code that moves data between JSON and your `TYPE`s is generated from your
-type definitions, so your handler just reads and writes fields. `Fail 404,
-"not found"` stops the handler and sends an error.
+The binary fills `Req` from the query string or the JSON body, runs the `OnGet` or
+`OnPost` that matches the method, and sends `Resp` back as JSON. I settled on that
+shape after trying a few others. The first version had one big `RunRoute$` function
+you wrote an `IF` in, and a pile of globals with names like `gReq` and `glue_Foo`.
+It worked, but I didn't want to explain it, so I redesigned it around one `SUB` per
+method and fixed names, then wrote down the rules in `docs/writing-routes.md`.
+
+---
+
+## What went wrong along the way
+
+QB64 gave me more surprises than I expected. It can't pass a user `TYPE` into a
+`SUB`, which is why `Req` and `Resp` are shared variables. A function with no
+parameters can't be called with `()`. Names I'd have sworn were fine, like `key`,
+`pos` and `out`, were rejected. Some of this I only learned by running it.
+
+The bug I like least was in `Fail`. QB64 has no exceptions, so to stop a handler
+early I raise an error and resume after the call. It worked in every test, until I
+ran the tests on macOS in CI and the process died of "Out of stack space" after
+about 290 failed requests. Each early exit leaks a little stack. Windows lasts about
+1,500, which is why I hadn't seen it. I tried a few ways to make QB64 give the stack
+back and none worked. So the binary now counts its failures and, after 25, asks the
+plugin to replace it with a fresh process. New requests go to the new one, the old
+one finishes what it was already sent and exits, and nothing gets dropped. A test
+sends 1,700 failures through the real runtime to keep that honest.
+
+`next dev` also hid a bug that `next build` found. The generated `route.ts`
+compared a method name with `'HEAD'` in a way TypeScript rejects, and only the
+production build type-checks. And the first `npm install github:…` from a clean
+project gave me a package with no compiled code in it, because nothing built it on
+install. Both are fixed now.
 
 ---
 
@@ -94,40 +130,35 @@ const { withBasic } = require('nextjs-basic');
 module.exports = withBasic({});
 ```
 
-Requires QB64-PE (or QB64) on your PATH, or set `QB64_PATH`. The plugin does the rest.
+Requires QB64-PE (or QB64) on your PATH, or set `QB64_PATH`. The plugin does the
+rest. I checked this in an empty Next.js 14 app, and checked `next dev`,
+`next build` and `next start` on the example app.
 
 ---
 
 ## Built with Kiro
 
-I used Kiro's spec-driven workflow: wrote `requirements.md` and `design.md`
-first, then Kiro implemented against them. The specs are committed in
-`.kiro/specs/` if you want to see how the design evolved.
+I used Kiro's spec-driven workflow: wrote `requirements.md` and `design.md` first,
+then built against them. The specs are in `.kiro/specs/`. They were rewritten after
+the redesign, so they describe what ended up shipping, not the first draft.
 
-The codebase:
-
-| File | What it is |
-|---|---|
-| `src/codegen.ts` | TYPE parser, TS codegen, QB64 glue SUB generator |
-| `src/compiler.ts` | QB64 compile step |
-| `src/plugin.ts` | webpack plugin |
-| `src/runtime/basicRuntime.ts` | Node.js child process manager |
-| `src/runtime/runtime.bas` | QB64 STDIO loop (user never sees this) |
-| `src/__tests__/codegen.test.ts` | 19 unit tests |
-| `src/__tests__/e2e.test.ts` | 12 integration tests (need QB64-PE or QB64 to run) |
-
-CI runs on ubuntu, windows, and macos on every push. The Windows job installs QB64-PE, so the 12 end-to-end tests compile and run real routes there; the other two platforms run the unit tests.
+The code is `src/codegen.ts` (parser and generators), `src/compiler.ts`,
+`src/plugin.ts`, `src/runtime/basicRuntime.ts` for the Node side and
+`src/runtime/runtime.bas` for the BASIC side. There are over a hundred tests. The
+end-to-end ones compile real routes with QB64 and talk to them over the same STDIO
+protocol the plugin uses, and CI runs them on Ubuntu, Windows and macOS.
 
 ---
 
 ## Known limitations
 
-- Strings in `TYPE` blocks must be fixed-length (`STRING * 50`, not `STRING`).
-  The parser gives a clear build error if you forget.
-- Needs a persistent server — Vercel and other serverless platforms won't work.
-  Railway, Fly.io, and Render all work fine. There's a `Dockerfile` in
-  `example/` and a guide in `docs/deployment.md`.
-- No streaming, no middleware in v1.
+Strings in `TYPE` blocks must be fixed-length (`STRING * 50`), and nested types
+aren't supported. A response header can be added but not replaced, and `AllowCors`
+takes a single origin. Request and response types are shared by all methods of a
+route. It needs a persistent server, so Vercel and other serverless platforms
+won't work, but Railway, Fly.io and Render do; there's a `Dockerfile` in `example/`
+and a guide in `docs/deployment.md`. I haven't run that Dockerfile against the
+final version. There's no streaming and no middleware.
 
 ---
 
@@ -136,10 +167,13 @@ CI runs on ubuntu, windows, and macos on every push. The Windows job installs QB
 ```
 src/                   plugin
 example/
-  app/api/hello/       GET example
-  app/api/echo/        POST example
+  app/api/hello/       GET, query string
+  app/api/echo/        POST, Fail
+  app/api/users/[id]/  dynamic segment, headers
+  app/api/status/      HEAD, OPTIONS, CORS
   Dockerfile           for Railway / Fly.io / Render
 docs/
+  writing-routes.md    reference for writing a route
   deployment.md        hosting guide
   submission.md        this file
 .kiro/specs/
