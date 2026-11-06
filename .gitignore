@@ -16,3 +16,6 @@ dev.log
 src/__tests__/fixtures/**/route.ts
 src/__tests__/fixtures/**/route.types.ts
 src/__tests__/fixtures/**/route.glue*.bas
+
+example/app/api/**/.gitignore
+*.tgz

@@ -121,3 +121,16 @@ jobs:
           test -f dist/index.js
           test -f dist/index.d.ts
           echo "dist looks good"
+
+      # What a user gets from `npm install`: pack (which runs prepare), install the
+      # tarball into an empty project, and load both entry points.
+      - name: Packed package installs and loads
+        shell: bash
+        run: |
+          npm pack --silent
+          mkdir "$RUNNER_TEMP/consumer"
+          cd "$RUNNER_TEMP/consumer"
+          echo '{"name":"consumer","private":true}' > package.json
+          npm install --no-audit --no-fund --legacy-peer-deps "$GITHUB_WORKSPACE"/nextjs-basic-*.tgz
+          node -e "const m = require('nextjs-basic'); if (typeof m.withBasic !== 'function') process.exit(1); require('nextjs-basic/runtime'); console.log('package loads')"
+          test -f node_modules/nextjs-basic/src/runtime/runtime.bas

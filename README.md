@@ -86,6 +86,10 @@ example routes with QB64 and talk to them over STDIO. They run when a QB64
 compiler is found and skip otherwise. CI installs QB64-PE on the Windows job, so
 the e2e tests run there on every push. Ubuntu and macOS run the unit tests only.
 
+## Generated files
+
+The plugin writes `route.ts`, `route.types.ts` and two `route.glue*.bas` files next to each `route.bas`, and compiled binaries into `bin/`. It adds a `.gitignore` in both places, so none of it lands in your git history.
+
 ## Deployment
 
 Serverless platforms (Vercel, Netlify, Lambda) are not supported — the QB64
