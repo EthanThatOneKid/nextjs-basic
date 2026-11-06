@@ -12,6 +12,7 @@ import * as path from 'path';
 import { execSync, spawn, spawnSync, ChildProcess } from 'child_process';
 import * as readline from 'readline';
 import { parseBasFile, writeGeneratedFiles } from '../codegen';
+import { callBasic, shutdownAll } from '../runtime/basicRuntime';
 
 // ---------------------------------------------------------------------------
 // QB64 availability check
@@ -30,7 +31,19 @@ function findQb64(): string | null {
 }
 
 const QB64 = findQb64();
+
+/** Progress lines on stderr (set E2E_TRACE=1), written at once so a hang shows where it stopped. */
+function trace(message: string): void {
+  if (process.env.E2E_TRACE) process.stderr.write(`[e2e ${new Date().toISOString()}] ${message}\n`);
+}
 const describeE2E = QB64 ? describe : describe.skip;
+
+// CI sets REQUIRE_QB64 so a missing compiler fails the run instead of skipping the e2e tests
+if (process.env.REQUIRE_QB64 && !QB64) {
+  test('a QB64 compiler is available', () => {
+    throw new Error('REQUIRE_QB64 is set but no QB64 compiler was found (QB64_PATH, qb64pe, qb64)');
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -48,7 +61,9 @@ const RUNTIME_BAS = path.join(__dirname, '..', 'runtime', 'runtime.bas');
  * into the scratch folder first so generated files never land in the source tree.
  */
 function compileTestBinary(basFile: string, scratchDir: string, name: string): string {
-  const routeDir = path.join(scratchDir, name);
+  // sources and binaries live in separate folders: on Linux and macOS a binary has no
+  // extension, so scratch/<name> would be both the route folder and the executable
+  const routeDir = path.join(scratchDir, 'src', name);
   fs.mkdirSync(routeDir, { recursive: true });
   const copy = path.join(routeDir, 'route.bas');
   fs.copyFileSync(basFile, copy);
@@ -67,14 +82,21 @@ function compileTestBinary(basFile: string, scratchDir: string, name: string): s
   const tmpBas = path.join(routeDir, 'combined.bas');
   fs.writeFileSync(tmpBas, combined, 'utf8');
 
-  const outBin = path.join(scratchDir, name + (os.platform() === 'win32' ? '.exe' : ''));
+  fs.mkdirSync(path.join(scratchDir, 'bin'), { recursive: true });
+  const outBin = path.join(scratchDir, 'bin', name + (os.platform() === 'win32' ? '.exe' : ''));
+  trace(`compiling ${name}`);
   const result = spawnSync(QB64!, ['-x', tmpBas, '-o', path.resolve(outBin)], {
     encoding: 'utf8',
     timeout: 120000,
+    killSignal: 'SIGKILL',
   });
+  trace(`compiled ${name}: status=${result.status} signal=${result.signal}`);
   if (result.status !== 0 || !fs.existsSync(outBin)) {
     const shown = (result.stdout || '').split('\n').filter(l => l.trim() && !l.startsWith('[')).join('\n');
-    throw new Error(`QB64 compile failed for ${name}:\n${shown}${result.stderr}`);
+    // QB64 keeps the C++ compiler's output in its own log next to the compiler
+    const logFile = path.join(path.dirname(QB64!), 'internal', 'temp', 'compilelog.txt');
+    const log = fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8').split('\n').slice(-40).join('\n') : '(no compile log)';
+    throw new Error(`QB64 compile failed for ${name}:\n${shown}${result.stderr}\n--- compile log (last lines) ---\n${log}`);
   }
   return outBin;
 }
@@ -86,9 +108,13 @@ interface Reply {
   body: any;
   /** Response headers the route set, as [name, value] pairs */
   headers: Array<[string, string]>;
+  /** Set when the process asks to be replaced (after many failures) */
+  recycle?: boolean;
 }
 
 /** One long-lived route process, like the real runtime keeps. */
+const liveClients = new Set<Client>();
+
 class Client {
   private proc: ChildProcess;
   private waiting: Array<(line: string) => void> = [];
@@ -98,22 +124,28 @@ class Client {
 
   constructor(bin: string) {
     this.proc = spawn(bin, [], { stdio: ['pipe', 'pipe', 'inherit'] });
+    liveClients.add(this);
+    trace(`spawned ${path.basename(bin)} pid=${this.proc.pid}`);
     const rl = readline.createInterface({ input: this.proc.stdout! });
     rl.on('line', line => {
       const w = this.waiting.shift();
       if (w) w(line); else this.buffered.push(line);
     });
-    this.exited = new Promise(resolve => this.proc.on('exit', () => resolve()));
+    this.exited = new Promise(resolve => this.proc.on('exit', (code, signal) => {
+      liveClients.delete(this);
+      trace(`exited ${path.basename(bin)} code=${code} signal=${signal}`);
+      resolve();
+    }));
   }
 
   call(payload: Record<string, unknown>): Promise<Reply> {
     const id = String(++this.n);
     return new Promise<Reply>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('no response within 5s')), 5000);
+      const timer = setTimeout(() => { trace(`no response to request ${id}`); reject(new Error('no response within 5s')); }, 5000);
       const onLine = (line: string) => {
         clearTimeout(timer);
         const wire = JSON.parse(line);
-        resolve({ id: wire._id, status: wire.statusCode, body: JSON.parse(wire.bodyJson), headers: wire.headers });
+        resolve({ id: wire._id, status: wire.statusCode, body: JSON.parse(wire.bodyJson), headers: wire.headers, recycle: wire.recycle });
       };
       const early = this.buffered.shift();
       if (early !== undefined) onLine(early); else this.waiting.push(onLine);
@@ -140,6 +172,8 @@ class Client {
   }
 }
 
+beforeEach(() => trace(`test: ${expect.getState().currentTestName}`));
+
 let scratch: string;
 const bins: Record<string, string> = {};
 
@@ -153,6 +187,7 @@ beforeAll(() => {
 }, 600000);
 
 afterAll(() => {
+  for (const c of [...liveClients]) c.kill();
   if (scratch) try { fs.rmSync(scratch, { recursive: true, force: true }); } catch { /* ignore */ }
 });
 
@@ -251,7 +286,9 @@ describeE2E('echo route (POST, body -> Req, Fail)', () => {
   });
 
   test('survives many failures in a row and still answers', async () => {
-    for (let i = 0; i < 300; i++) {
+    // stays under the 25-failure recycle budget: a bare process would crash at about
+    // 290 failures on macOS, which is what the recycle tests below are about
+    for (let i = 0; i < 20; i++) {
       expect((await c.post({})).status).toBe(400);
     }
     const ok = await c.post({ message: 'still alive', count: 1 });
@@ -467,6 +504,58 @@ describeE2E('response headers (SetHeader, AllowCors)', () => {
     const ok = await withNote('plain');
     expect(ok.status).toBe(200);
   });
+});
+
+// ---------------------------------------------------------------------------
+// many failures: Fail leaks a little QB64 stack, so the process asks to be replaced
+// ---------------------------------------------------------------------------
+
+describeE2E('failure budget (recycle)', () => {
+  test('the 25th failed response asks for a replacement, earlier ones do not', async () => {
+    const c = new Client(bins.types);
+    try {
+      for (let i = 1; i < 25; i++) {
+        const r = await c.post({}, 'DELETE');
+        expect(r.status).toBe(418);
+        expect(r.recycle).toBeUndefined();
+      }
+      const last = await c.post({}, 'DELETE');
+      expect(last.recycle).toBe(true);
+      // successful responses never ask on their own
+      const fresh = new Client(bins.types);
+      expect((await fresh.post({ anInt: 1 })).recycle).toBeUndefined();
+      fresh.kill();
+    } finally {
+      c.kill();
+    }
+  }, 60000);
+
+  test('the Node runtime survives far more failures than one process can', async () => {
+    // one process dies after 290 (macOS) to 1,500 (Windows) failures; this sends 1,700
+    // through callBasic, so it only passes when processes are replaced along the way
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nb-recycle-'));
+    const binDir = path.join(dir, 'bin');
+    fs.mkdirSync(binDir);
+    const ext = os.platform() === 'win32' ? '.exe' : '';
+    fs.copyFileSync(bins.types, path.join(binDir, 'types' + ext));
+    const cwd = process.cwd();
+    process.chdir(dir);
+    try {
+      for (let i = 0; i < 1700; i++) {
+        const raw = await callBasic({ endpoint: 'types', method: 'DELETE', path: '/t', bodyJson: '{}' });
+        expect(JSON.parse(raw).statusCode).toBe(418);
+      }
+      const ok = JSON.parse(await callBasic({
+        endpoint: 'types', method: 'POST', path: '/t', bodyJson: JSON.stringify({ anInt: 9 }),
+      }));
+      expect(ok.statusCode).toBe(200);
+      expect(JSON.parse(ok.bodyJson).anInt).toBe(9);
+    } finally {
+      shutdownAll();
+      process.chdir(cwd);
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+  }, 120000);
 });
 
 // ---------------------------------------------------------------------------

@@ -48,6 +48,13 @@ DIM SHARED gFailed AS INTEGER
 DIM SHARED gFailCode AS INTEGER
 DIM SHARED gFailMsg AS STRING
 DIM SHARED gHeaders AS STRING
+DIM SHARED gFailCount AS LONG
+
+' Each Fail leaves a little QB64 stack behind (ERROR + RESUME never gives it back),
+' and the process dies of "Out of stack space": after about 1,500 of them on Windows
+' but only about 290 on macOS, and sooner the deeper Fail is called from. The reply
+' asks the host to replace this process long before that.
+CONST RecycleAfter = 25
 
 ' ---------------------------------------------------------------------------
 ' Main STDIO loop: one JSON request line in, one JSON response line out
@@ -92,7 +99,8 @@ afterCall:
         gReply.bodyJson = "{" + CHR$(34) + "error" + CHR$(34) + ":" + CHR$(34) + JEn$(gFailMsg) + CHR$(34) + "}"
     END IF
 
-    PRINT BldResp$(RTRIM$(gReply.reqId), gReply.statusCode, RTRIM$(gReply.bodyJson), gHeaders)
+    IF gFailed THEN gFailCount = gFailCount + 1
+    PRINT BldResp$(RTRIM$(gReply.reqId), gReply.statusCode, RTRIM$(gReply.bodyJson), gHeaders, gFailCount >= RecycleAfter)
     _DELAY 0
 LOOP
 
@@ -243,13 +251,15 @@ FUNCTION JInt% (jsonIn AS STRING, kn AS STRING)
     JInt% = VAL(JVal$(jsonIn, kn))
 END FUNCTION
 
-FUNCTION BldResp$ (rid AS STRING, sc AS INTEGER, bj AS STRING, hdrs AS STRING)
-    BldResp$ = "{" + _
+FUNCTION BldResp$ (rid AS STRING, sc AS INTEGER, bj AS STRING, hdrs AS STRING, recycle AS INTEGER)
+    DIM rOut AS STRING
+    rOut = "{" + _
         CHR$(34) + "_id" + CHR$(34) + ":" + CHR$(34) + JEn$(rid) + CHR$(34) + "," + _
         CHR$(34) + "statusCode" + CHR$(34) + ":" + LTRIM$(STR$(sc)) + "," + _
         CHR$(34) + "bodyJson" + CHR$(34) + ":" + CHR$(34) + JEn$(bj) + CHR$(34) + "," + _
-        CHR$(34) + "headers" + CHR$(34) + ":[" + hdrs + "]" + _
-        "}"
+        CHR$(34) + "headers" + CHR$(34) + ":[" + hdrs + "]"
+    IF recycle THEN rOut = rOut + "," + CHR$(34) + "recycle" + CHR$(34) + ":true"
+    BldResp$ = rOut + "}"
 END FUNCTION
 
 ' Undo JSON string escapes
