@@ -2,6 +2,7 @@
 
 **Category:** Frankenstein
 **Repo:** https://github.com/EthanThatOneKid/nextjs-basic
+**Live demo:** https://nextjs-basic-demo-cy26xih5na-uc.a.run.app/api/hello?name=Ada
 
 ---
 
@@ -160,7 +161,9 @@ takes a single origin. Request and response types are shared by all methods of a
 route. It needs a persistent server, so Vercel and other serverless platforms
 won't work, but Railway, Fly.io and Render do; there's a `Dockerfile` in `example/`
 and a guide in `docs/deployment.md`. CI builds that image and calls every route on
-each push, but I haven't deployed it to any of those hosts. There's no streaming and no middleware.
+each push. The live demo runs that image on Google Cloud Run, and it sleeps when idle,
+so the first request can take a few seconds. I haven't tried Railway, Fly.io or Render.
+There's no streaming and no middleware.
 
 ---
 
