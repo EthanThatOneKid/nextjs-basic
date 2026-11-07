@@ -4,6 +4,8 @@
 
 Write Next.js API routes in QB64 BASIC.
 
+![A route.bas file, then a curl to the live demo returning its JSON](docs/demo.gif)
+
 ```basic
 ' app/api/hello/route.bas
 
