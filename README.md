@@ -27,6 +27,8 @@ END SUB
 `GET /api/hello?name=Ada` returns the message as JSON. TypeScript types are
 generated from your `TYPE` blocks. No boilerplate, no manual wiring.
 
+Try it live: [/api/hello?name=Ada](https://nextjs-basic-demo-cy26xih5na-uc.a.run.app/api/hello?name=Ada). It runs on Google Cloud Run and sleeps when idle, so the first request can take a few seconds.
+
 ---
 
 ## Install
@@ -105,7 +107,8 @@ binary runs as a persistent child process. Use a host that runs a Docker contain
 or a long-lived Node server.
 
 `example/Dockerfile` builds QB64-PE, compiles the example routes and runs
-`next start`. CI builds that image and calls every route on each push. I have not
+`next start`. CI builds that image and calls every route on each push. The live demo
+above runs that image on Google Cloud Run (`scripts/deploy-cloud-run.sh`). I have not
 deployed it to Railway, Fly.io or Render.
 
 See [docs/deployment.md](docs/deployment.md) for step-by-step guides.
