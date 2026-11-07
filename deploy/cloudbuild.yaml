@@ -1,0 +1,15 @@
+# Cloud Build config for the example image. Run from the repository root:
+#
+#   gcloud builds submit --config deploy/cloudbuild.yaml \
+#     --substitutions _IMAGE=us-central1-docker.pkg.dev/PROJECT/nextjs-basic/example:latest .
+#
+# scripts/deploy-cloud-run.sh does this for you. The image builds QB64-PE from source,
+# so give it time; the default 10 minutes is not enough on the default machine.
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: ['build', '-f', 'example/Dockerfile', '-t', '${_IMAGE}', '.']
+images:
+  - '${_IMAGE}'
+timeout: 1800s
+options:
+  logging: CLOUD_LOGGING_ONLY
