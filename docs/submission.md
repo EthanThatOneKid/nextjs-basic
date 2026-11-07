@@ -3,6 +3,7 @@
 **Category:** Frankenstein
 **Repo:** https://github.com/EthanThatOneKid/nextjs-basic
 **Live demo:** https://nextjs-basic-demo-cy26xih5na-uc.a.run.app/api/hello?name=Ada
+**Deadline:** December 4, 2026, 2:00 p.m. Pacific (from secondary sources; confirm on the Devpost rules page)
 
 ---
 
