@@ -112,7 +112,7 @@ What it does, in order: enables the Cloud Run, Cloud Build and Artifact Registry
 - It refuses to run if a service with the same name already exists, so it never deletes something that was not its own. Set `SERVICE`, `REGION`, `PROJECT` or `REPO` to change the defaults.
 - It costs a little: Cloud Run and Cloud Build both have free tiers, and a short test normally stays inside them. Check your own billing.
 
-Status: written and syntax-checked, and the route check is tested against a local server. It has not yet been run against a real project.
+Status: tested. On 2026-11-06 the script's build and deploy steps ran against a real Google Cloud project, and `scripts/check-routes.sh` passed all eight checks against the live Cloud Run URL. The image was built by Cloud Build and deployed with 1GB of memory and a limit of one instance. Railway, Fly.io and Render have still not been tried.
 
 ---
 
